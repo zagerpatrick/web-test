@@ -48,7 +48,7 @@ scene.add( directionalLight3 );
 // Define files for import
 
 // Define the base file name and file extension
-var baseFileName = "mesh";
+var baseFileName = "web-test/mesh";
 var fileExtension = ".glb";
 
 // Define the number of files to iterate through
@@ -63,6 +63,8 @@ function pad(num, size) {
 
 // Create an array to hold meshes
 var glbFiles = [];
+
+// Generate array containing filenames
 
 for (var i = 1; i < numberOfFiles; i++) {
 
