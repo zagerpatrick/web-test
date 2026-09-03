@@ -57,9 +57,21 @@ export default class VolumeLoader {
 	async loadMetadata(metadataUrl) {
 		const response = await fetch(metadataUrl);
 		if (!response.ok) {
-			throw new Error(`Failed to load metadata: ${response.statusText}`);
+			throw new Error(`Failed to load ${metadataUrl}: ${response.status} ${response.statusText}`);
 		}
-		return response.json();
+		// Vite's dev/preview servers answer missing files with index.html (HTTP 200)
+		const contentType = response.headers.get('content-type') || '';
+		if (contentType.includes('text/html')) {
+			throw new Error(`${metadataUrl} not found (the server returned an HTML page instead)`);
+		}
+		// Parse from text so a syntax error can name the file and its position
+		const text = await response.text();
+		try {
+			return JSON.parse(text);
+		} catch (error) {
+			throw new Error(`Invalid JSON in ${metadataUrl}: ${error.message} ` +
+				'(check for hand-edit mistakes such as a trailing comma after the last entry)');
+		}
 	}
 
 	/**

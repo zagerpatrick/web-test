@@ -136,8 +136,17 @@ export default class VolumeTimeseriesView {
 			const metadataUrl = this.basePath + 'metadata.json';
 			this.metadata = await this.volumeLoader.loadMetadata(metadataUrl);
 
-			// Update frame count from metadata
-			this.frameCount = this.metadata.frameCount;
+			// The explicit file list is authoritative for the frame count; a hand-edited
+			// frameCount that disagrees with it is corrected (with a warning).
+			const files = Array.isArray(this.metadata.files) ? this.metadata.files : null;
+			if (files) {
+				if (this.metadata.frameCount != null && this.metadata.frameCount !== files.length) {
+					console.warn(`VolumeTimeseriesView: metadata.frameCount (${this.metadata.frameCount}) ` +
+						`does not match files.length (${files.length}); using files.length`);
+				}
+				this.metadata.frameCount = files.length;
+			}
+			this.frameCount = this.metadata.frameCount || 0;
 
 			// Generate volume URLs
 			this.volumeUrls = this._generateVolumeUrls();
@@ -163,15 +172,15 @@ export default class VolumeTimeseriesView {
 	_generateVolumeUrls() {
 		const urls = [];
 
-		if (this.metadata.files) {
+		if (Array.isArray(this.metadata.files)) {
 			// Use explicit file list
 			for (const file of this.metadata.files) {
 				urls.push(this.basePath + file);
 			}
 		} else {
-			// Use file pattern
-			const pattern = this.metadata.filePattern || '{index:04d}.bin.gz';
-			for (let i = 1; i <= this.frameCount; i++) {
+			// Use file pattern (0-based, brotli-compressed, as written by convert-zarr-to-bin.py)
+			const pattern = this.metadata.filePattern || '{index:04d}.bin.br';
+			for (let i = 0; i < this.frameCount; i++) {
 				const filename = pattern.replace('{index:04d}', String(i).padStart(4, '0'));
 				urls.push(this.basePath + filename);
 			}

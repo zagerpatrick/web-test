@@ -4,6 +4,15 @@ import sharedRenderer from './SharedRenderer.js';
 import { processMaterials, processVertexColorMaterials, createLightingSetup } from './MaterialFactory.js';
 import OrientationMarker from './OrientationMarker.js';
 
+// Discovery tuning: HEAD probes issued in parallel per round, and the largest
+// index offset probed before giving up (safety cap for runaway sequences).
+const PROBE_FANOUT = 8;
+const MAX_PROBE_OFFSET = 1 << 17;
+
+// Discovery results shared between views that point at the same file sequence,
+// so several views of one dataset probe the server only once.
+const discoveryCache = new Map();
+
 /**
  * MeshTimeseriesView - Encapsulates a single mesh timeseries view
  *
@@ -18,8 +27,10 @@ export default class MeshTimeseriesView {
 	 * Create a new mesh timeseries view
 	 * @param {Object} options - View configuration
 	 * @param {HTMLElement} options.elem - DOM element to render into
-	 * @param {string} options.basePath - Base path for mesh files (e.g., 'public/dataset1/mesh')
-	 * @param {number} options.meshCount - Number of meshes in the timeseries
+	 * @param {string} options.basePath - Base path for mesh files (e.g., 'data/meshes/mesh')
+	 * @param {number} [options.meshCount] - Number of meshes; omit to discover the count from the server
+	 * @param {number} [options.startIndex] - Index of the first file (0 or 1); omit to auto-detect
+	 * @param {number} options.padWidth - Zero-padding width of the file index (default: 4)
 	 * @param {string} options.fileExtension - File extension (default: '.glb')
 	 * @param {number} options.loadConcurrency - Concurrent loads (default: 12)
 	 * @param {number} options.defaultPlaySpeed - Default playback speed in ms (default: 250)
@@ -28,11 +39,16 @@ export default class MeshTimeseriesView {
 	 * @param {Function} options.onLoadProgress - Callback for load progress (loaded, total)
 	 * @param {Function} options.onLoadComplete - Callback when all meshes loaded
 	 * @param {Function} options.onFrameChange - Callback when frame changes (index)
+	 * @param {Function} options.onCountResolved - Callback once the mesh count is known (count, startIndex)
 	 */
 	constructor(options) {
 		this.elem = options.elem;
 		this.basePath = options.basePath;
-		this.meshCount = options.meshCount || 90;
+		// An explicit count skips discovery; anything else means "ask the server"
+		const explicitCount = Number(options.meshCount);
+		this.meshCount = Number.isFinite(explicitCount) && explicitCount > 0 ? Math.floor(explicitCount) : 0;
+		this.startIndex = Number.isInteger(options.startIndex) ? options.startIndex : null;
+		this.padWidth = options.padWidth || 4;
 		this.fileExtension = options.fileExtension || '.glb';
 		this.loadConcurrency = options.loadConcurrency || 12;
 		this.defaultPlaySpeed = options.defaultPlaySpeed || 250;
@@ -43,9 +59,10 @@ export default class MeshTimeseriesView {
 		this.onLoadProgress = options.onLoadProgress || (() => {});
 		this.onLoadComplete = options.onLoadComplete || (() => {});
 		this.onFrameChange = options.onFrameChange || (() => {});
+		this.onCountResolved = options.onCountResolved || (() => {});
 
-		// State
-		this.meshes = new Array(this.meshCount);
+		// State (meshes is filled by index once the count is known)
+		this.meshes = [];
 		this.currentIndex = 0;
 		this.isPlaying = false;
 		this.playTimeoutId = null;
@@ -96,8 +113,51 @@ export default class MeshTimeseriesView {
 		// Register with shared renderer
 		sharedRenderer.addView(this);
 
-		// Start loading meshes
-		this._loadAllMeshes();
+		// Resolve the mesh count (explicit or discovered), then load
+		this._start();
+	}
+
+	/**
+	 * Resolve the mesh count (explicit option or server discovery), then start loading
+	 * @private
+	 */
+	async _start() {
+		try {
+			if (this.meshCount > 0) {
+				// Explicit count: only the numbering origin needs detecting
+				if (this.startIndex === null) {
+					this.startIndex = (await this._detectStartIndex()) ?? 1;
+				}
+			} else {
+				const { startIndex, count } = await this._discoverMeshRange();
+				this.startIndex = startIndex;
+				this.meshCount = count;
+			}
+			if (this.isDisposed) return;
+
+			console.log(`MeshTimeseriesView: ${this.meshCount} meshes at ${this.basePath} (start index ${this.startIndex})`);
+			this.onCountResolved(this.meshCount, this.startIndex);
+
+			if (this.meshCount === 0) {
+				console.warn(`MeshTimeseriesView: no mesh files found, expected e.g. ${this._urlFor(this.startIndex)}`);
+				this.onLoadComplete();
+				return;
+			}
+
+			this._loadAllMeshes();
+		} catch (error) {
+			console.error('MeshTimeseriesView: failed to resolve mesh files:', error);
+		}
+	}
+
+	/**
+	 * Build the URL of one mesh file
+	 * @private
+	 * @param {number} index - File index (not frame index)
+	 * @returns {string}
+	 */
+	_urlFor(index) {
+		return `${this.basePath}${String(index).padStart(this.padWidth, '0')}${this.fileExtension}`;
 	}
 
 	/**
@@ -107,11 +167,125 @@ export default class MeshTimeseriesView {
 	 */
 	_generateFileUrls() {
 		const urls = [];
-		for (let i = 1; i <= this.meshCount; i++) {
-			const padded = String(i).padStart(4, '0');
-			urls.push(`${this.basePath}${padded}${this.fileExtension}`);
+		const start = this.startIndex ?? 1;
+		for (let i = 0; i < this.meshCount; i++) {
+			urls.push(this._urlFor(start + i));
 		}
 		return urls;
+	}
+
+	/**
+	 * Check whether a mesh file exists on the server without downloading it
+	 * @private
+	 * @param {number} index - File index
+	 * @returns {Promise<boolean>}
+	 */
+	async _probeExists(index) {
+		const url = this._urlFor(index);
+		try {
+			let response = await fetch(url, { method: 'HEAD', cache: 'no-store' });
+			if (response.status === 405 || response.status === 501) {
+				// Static host without HEAD support: ask for a single byte instead
+				response = await fetch(url, { headers: { Range: 'bytes=0-0' }, cache: 'no-store' });
+				response.body?.cancel();
+			}
+			// Vite's dev/preview servers answer missing files with index.html (HTTP 200),
+			// so a successful status alone does not prove the file exists.
+			const type = response.headers.get('content-type') || '';
+			return response.ok && !type.includes('text/html');
+		} catch (error) {
+			return false;
+		}
+	}
+
+	/**
+	 * Detect whether the sequence starts at index 0 or 1
+	 * @private
+	 * @returns {Promise<number|null>} 0 or 1, or null if neither file exists
+	 */
+	async _detectStartIndex() {
+		const [hasZero, hasOne] = await Promise.all([this._probeExists(0), this._probeExists(1)]);
+		if (hasZero) return 0;
+		if (hasOne) return 1;
+		return null;
+	}
+
+	/**
+	 * Discover the numbering origin and the number of contiguous mesh files,
+	 * sharing the result with other views of the same sequence
+	 * @private
+	 * @returns {Promise<{startIndex: number, count: number}>}
+	 */
+	_discoverMeshRange() {
+		const key = `${this.basePath}|${this.fileExtension}|${this.padWidth}|${this.startIndex ?? 'auto'}`;
+		if (!discoveryCache.has(key)) {
+			const discovery = this._probeMeshRange().catch((error) => {
+				discoveryCache.delete(key); // don't cache failures
+				throw error;
+			});
+			discoveryCache.set(key, discovery);
+		}
+		return discoveryCache.get(key);
+	}
+
+	/**
+	 * Find the last file of a contiguously numbered sequence with a galloping search:
+	 * probe index offsets 1, 2, 4, 8, ... in parallel until the first miss, then narrow
+	 * the bracket with parallel probes (about 24 HEAD requests for ~100 files).
+	 * Numbering gaps are not supported: the first missing index ends the sequence.
+	 * @private
+	 * @returns {Promise<{startIndex: number, count: number}>}
+	 */
+	async _probeMeshRange() {
+		// 1. Numbering origin
+		let startIndex = this.startIndex;
+		if (startIndex === null) {
+			startIndex = await this._detectStartIndex();
+			if (startIndex === null) return { startIndex: 1, count: 0 };
+		} else if (!(await this._probeExists(startIndex))) {
+			return { startIndex, count: 0 };
+		}
+
+		// 2. Galloping search for the first missing index
+		const offsets = [];
+		for (let offset = 1; offset <= MAX_PROBE_OFFSET; offset *= 2) offsets.push(offset);
+		let lo = startIndex; // last index known to exist
+		let hi = null;       // first index known to be missing
+		for (let c = 0; c < offsets.length && hi === null; c += PROBE_FANOUT) {
+			const chunk = offsets.slice(c, c + PROBE_FANOUT);
+			const hits = await Promise.all(chunk.map((offset) => this._probeExists(startIndex + offset)));
+			for (let k = 0; k < chunk.length; k++) {
+				if (hits[k]) {
+					lo = startIndex + chunk[k];
+				} else {
+					hi = startIndex + chunk[k];
+					break;
+				}
+			}
+		}
+		if (hi === null) hi = lo + 1; // hit the safety cap: treat lo as the last file
+
+		// 3. Narrow (lo, hi) until the two are adjacent
+		while (hi - lo > 1) {
+			const span = hi - lo;
+			const k = Math.min(PROBE_FANOUT, span - 1);
+			const points = Array.from({ length: k }, (_, j) => lo + Math.floor((j + 1) * span / (k + 1)));
+			const hits = await Promise.all(points.map((point) => this._probeExists(point)));
+			let newLo = lo;
+			let newHi = hi;
+			for (let j = 0; j < k; j++) {
+				if (hits[j]) {
+					newLo = points[j];
+				} else {
+					newHi = points[j];
+					break;
+				}
+			}
+			lo = newLo;
+			hi = newHi;
+		}
+
+		return { startIndex, count: lo - startIndex + 1 };
 	}
 
 	/**
@@ -124,7 +298,19 @@ export default class MeshTimeseriesView {
 
 		let activeLoads = 0;
 		let nextIndex = 0;
+		let settledCount = 0;
 		let firstFrameShown = false;
+
+		// Runs after every load, successful or not, so completion fires even when
+		// some files are missing (an over-estimated explicit count, a bad file, ...)
+		const onSettled = () => {
+			settledCount++;
+			activeLoads--;
+			if (settledCount === urls.length) {
+				this.onLoadComplete();
+			}
+			loadNext();
+		};
 
 		const loadNext = () => {
 			if (this.isDisposed) return;
@@ -159,7 +345,6 @@ export default class MeshTimeseriesView {
 						this.scene.add(gltf.scene);
 						this.meshes[index] = gltf.scene;
 						this.loadedCount++;
-						activeLoads--;
 
 						this.onLoadProgress(this.loadedCount, urls.length);
 
@@ -169,17 +354,11 @@ export default class MeshTimeseriesView {
 							firstFrameShown = true;
 						}
 
-						// Check if all loaded
-						if (this.loadedCount === urls.length) {
-							this.onLoadComplete();
-						}
-
-						loadNext();
+						onSettled();
 					})
 					.catch((error) => {
 						console.error(`Error loading ${urls[index]}:`, error);
-						activeLoads--;
-						loadNext();
+						onSettled();
 					});
 			}
 		};
@@ -281,7 +460,7 @@ export default class MeshTimeseriesView {
 	 * @private
 	 */
 	_playLoop() {
-		if (!this.isPlaying || this.isDisposed) return;
+		if (!this.isPlaying || this.isDisposed || this.meshCount === 0) return;
 
 		const nextIndex = (this.currentIndex + 1) % this.meshCount;
 		this.setFrame(nextIndex);
@@ -294,6 +473,7 @@ export default class MeshTimeseriesView {
 	 */
 	stepForward() {
 		this.pause();
+		if (this.meshCount === 0) return;
 		const nextIndex = Math.min(this.currentIndex + 1, this.meshCount - 1);
 		this.setFrame(nextIndex);
 	}

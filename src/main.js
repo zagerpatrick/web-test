@@ -40,9 +40,12 @@ function initMeshViews() {
 	document.querySelectorAll('.mesh-view').forEach((elem) => {
 		const wrapper = elem.closest('.mesh-view-wrapper');
 
-		// Get configuration from data attributes
+		// Get configuration from data attributes.
+		// data-meshcount and data-startindex are optional overrides; when omitted the
+		// view discovers the numbering origin and the file count from the server.
 		const basePath = elem.dataset.basepath || 'data/meshes/mesh';
-		const meshCount = parseInt(elem.dataset.meshcount) || 90;
+		const meshCount = elem.dataset.meshcount ? parseInt(elem.dataset.meshcount, 10) : undefined;
+		const startIndex = elem.dataset.startindex ? parseInt(elem.dataset.startindex, 10) : undefined;
 		const useVertexColors = elem.dataset.vertexcolors === 'true';
 
 		// Get control elements
@@ -55,18 +58,19 @@ function initMeshViews() {
 		const progressText = wrapper.querySelector('.progress-text');
 		const progressContainer = wrapper.querySelector('.view-progress');
 
-		// Update timeline max based on mesh count
-		if (timeline) {
-			timeline.max = meshCount - 1;
-		}
-
 		// Create the view
 		const view = new MeshTimeseriesView({
 			elem,
 			basePath,
 			meshCount,
+			startIndex,
 			enableControls: true,
 			useVertexColors,
+			onCountResolved: (count) => {
+				// Timeline range and progress total follow the resolved count
+				if (timeline) timeline.max = Math.max(count - 1, 0);
+				if (progressText) progressText.textContent = `0/${count}`;
+			},
 			onLoadProgress: (loaded, total) => {
 				const percent = Math.round((loaded / total) * 100);
 				if (progressBar) progressBar.style.width = `${percent}%`;

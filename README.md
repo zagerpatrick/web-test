@@ -72,6 +72,20 @@ The `scripts/` directory contains utilities for converting raw data:
 - `ply_to_glb.py` - Converts PLY meshes to optimized GLB format
 - `convert-zarr-to-bin.py` - Converts Zarr volumes to Brotli-compressed binary
 
+### Data layout
+
+- **Meshes** (`public/data/meshes/`): one GLB per frame named `<prefix><NNNN>.glb`,
+  zero-padded to 4 digits and numbered contiguously (no gaps). Both 0-based
+  (`mesh0000.glb`) and 1-based (`mesh0001.glb`) sequences work. Each `.mesh-view`
+  in `src/index.html` names the prefix with `data-basepath` (e.g. `data/meshes/mesh`).
+  The number of frames is discovered automatically from the server, so swapping in a
+  new sequence needs no HTML edits. `data-meshcount` and `data-startindex` are optional
+  overrides for the discovered values.
+- **Volumes** (`public/data/volumes/`): `metadata.json` plus one `NNNN.bin.br` per
+  frame (0-based), both written by `convert-zarr-to-bin.py`. The metadata must be
+  valid JSON (watch for trailing commas when editing it by hand); its `files` array is
+  the source of truth for the frame count.
+
 ## Features
 
 - **Multi-view rendering**: Multiple independent 3D views using scissor-based rendering

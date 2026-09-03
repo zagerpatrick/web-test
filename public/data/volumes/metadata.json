@@ -1,9 +1,9 @@
 {
-  "frameCount": 98,
+  "frameCount": 65,
   "dimensions": [
-    166,
-    180,
-    212
+    210,
+    192,
+    242
   ],
   "dataType": "uint4",
   "bitDepth": 4,
@@ -13,7 +13,7 @@
     1.0
   ],
   "valueRange": [
-    1,
+    0,
     15
   ],
   "files": [
@@ -81,45 +81,12 @@
     "0061.bin.br",
     "0062.bin.br",
     "0063.bin.br",
-    "0064.bin.br",
-    "0065.bin.br",
-    "0066.bin.br",
-    "0067.bin.br",
-    "0068.bin.br",
-    "0069.bin.br",
-    "0070.bin.br",
-    "0071.bin.br",
-    "0072.bin.br",
-    "0073.bin.br",
-    "0074.bin.br",
-    "0075.bin.br",
-    "0076.bin.br",
-    "0077.bin.br",
-    "0078.bin.br",
-    "0079.bin.br",
-    "0080.bin.br",
-    "0081.bin.br",
-    "0082.bin.br",
-    "0083.bin.br",
-    "0084.bin.br",
-    "0085.bin.br",
-    "0086.bin.br",
-    "0087.bin.br",
-    "0088.bin.br",
-    "0089.bin.br",
-    "0090.bin.br",
-    "0091.bin.br",
-    "0092.bin.br",
-    "0093.bin.br",
-    "0094.bin.br",
-    "0095.bin.br",
-    "0096.bin.br",
-    "0097.bin.br"
+    "0064.bin.br"
   ],
   "compression": "brotli",
   "processing": {
-    "intensityMin": 0,
-    "intensityMax": 2000,
+    "intensityMin": 200,
+    "intensityMax": 4000,
     "originalDtype": "int16",
     "converted": "4-bit"
   }
