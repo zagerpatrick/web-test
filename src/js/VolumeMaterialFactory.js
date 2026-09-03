@@ -133,7 +133,8 @@ export default class VolumeMaterialFactory {
 	 * @param {THREE.Data3DTexture} volumeTexture - The 3D volume texture
 	 * @param {Object} options - Material options
 	 * @param {string} options.colormap - Colormap name (default: 'grayscale')
-	 * @param {number} options.threshold - Visibility threshold 0-1 (default: 0.1)
+	 * @param {number} options.contrastMin - Lower contrast limit 0-1; voxels below are hidden (default: 0.1)
+	 * @param {number} options.contrastMax - Upper contrast limit 0-1; voxels above saturate (default: 1.0)
 	 * @param {number} options.opacity - Global opacity 0-1 (default: 1.0)
 	 * @param {number} options.stepCount - Ray marching steps (default: 256)
 	 * @param {string} options.renderMode - 'mip' or 'opacity' (default: 'mip')
@@ -141,7 +142,8 @@ export default class VolumeMaterialFactory {
 	 */
 	createMaterial(volumeTexture, options = {}) {
 		const colormap = options.colormap || 'grayscale';
-		const threshold = options.threshold ?? SHADER_DEFAULTS.threshold;
+		const contrastMin = options.contrastMin ?? SHADER_DEFAULTS.contrastMin;
+		const contrastMax = options.contrastMax ?? SHADER_DEFAULTS.contrastMax;
 		const opacity = options.opacity ?? SHADER_DEFAULTS.opacity;
 		const stepCount = options.stepCount ?? SHADER_DEFAULTS.stepCount;
 		const renderMode = options.renderMode === 'opacity' ? RENDER_MODES.OPACITY : RENDER_MODES.MIP;
@@ -159,7 +161,8 @@ export default class VolumeMaterialFactory {
 						volumeTexture.image.depth
 					)
 				},
-				uThreshold: { value: threshold },
+				uContrastMin: { value: contrastMin },
+				uContrastMax: { value: contrastMax },
 				uOpacity: { value: opacity },
 				uStepCount: { value: stepCount },
 				uRenderMode: { value: renderMode },
@@ -197,8 +200,12 @@ export default class VolumeMaterialFactory {
 			material.uniforms.uColormap.value = this.getColormapTexture(updates.colormap);
 		}
 
-		if (updates.threshold !== undefined) {
-			material.uniforms.uThreshold.value = updates.threshold;
+		if (updates.contrastMin !== undefined) {
+			material.uniforms.uContrastMin.value = updates.contrastMin;
+		}
+
+		if (updates.contrastMax !== undefined) {
+			material.uniforms.uContrastMax.value = updates.contrastMax;
 		}
 
 		if (updates.opacity !== undefined) {

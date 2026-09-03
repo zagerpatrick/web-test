@@ -13,7 +13,7 @@ import OrientationMarker from './OrientationMarker.js';
  * - Camera with TrackballControls
  * - One persistent R8 3D texture, updated in place from a decoded-frame cache
  * - Independent playback state
- * - Volume-specific controls (render mode, threshold, colormap, etc.)
+ * - Volume-specific controls (render mode, contrast limits, colormap, etc.)
  */
 export default class VolumeTimeseriesView {
 	/**
@@ -29,7 +29,8 @@ export default class VolumeTimeseriesView {
 	 * @param {boolean} options.enableControls - Enable TrackballControls (default: true)
 	 * @param {string} options.colormap - Initial colormap (default: 'grayscale')
 	 * @param {string} options.renderMode - Initial render mode: 'mip' or 'opacity' (default: 'mip')
-	 * @param {number} options.threshold - Initial threshold 0-1 (default: 0.1)
+	 * @param {number} options.contrastMin - Initial lower contrast limit 0-1 (default: 0.1)
+	 * @param {number} options.contrastMax - Initial upper contrast limit 0-1 (default: 1.0)
 	 * @param {number} options.opacity - Initial opacity 0-1 (default: 1.0)
 	 * @param {number} options.stepCount - Ray marching steps (default: 256)
 	 * @param {Function} options.onLoadProgress - Callback for load progress (loaded, total)
@@ -49,7 +50,8 @@ export default class VolumeTimeseriesView {
 		// Volume rendering settings
 		this.colormap = options.colormap || 'grayscale';
 		this.renderMode = options.renderMode || 'mip';
-		this.threshold = options.threshold ?? 0.01;
+		this.contrastMin = options.contrastMin ?? 0.1;
+		this.contrastMax = options.contrastMax ?? 1.0;
 		this.opacity = options.opacity ?? 1.0;
 		this.stepCount = options.stepCount || 256;
 
@@ -311,7 +313,8 @@ export default class VolumeTimeseriesView {
 			this.volumeTexture = this.volumeLoader.createTexture(data);
 			this.volumeMaterial = this.materialFactory.createMaterial(this.volumeTexture, {
 				colormap: this.colormap,
-				threshold: this.threshold,
+				contrastMin: this.contrastMin,
+				contrastMax: this.contrastMax,
 				opacity: this.opacity,
 				stepCount: this.stepCount,
 				renderMode: this.renderMode
@@ -469,22 +472,44 @@ export default class VolumeTimeseriesView {
 	}
 
 	/**
-	 * Set visibility threshold
-	 * @param {number} threshold - Threshold 0-1
+	 * Set contrast limits (like ImageJ / napari). Voxels at or below min are
+	 * hidden, voxels at or above max saturate to the top of the colormap.
+	 * @param {number} min - Lower limit 0-1
+	 * @param {number} max - Upper limit 0-1
 	 */
-	setThreshold(threshold) {
-		this.threshold = threshold;
+	setContrastLimits(min, max) {
+		this.contrastMin = Math.min(min, max);
+		this.contrastMax = Math.max(min, max);
 		if (this.volumeMaterial) {
-			this.materialFactory.updateMaterial(this.volumeMaterial, { threshold });
+			this.materialFactory.updateMaterial(this.volumeMaterial, {
+				contrastMin: this.contrastMin,
+				contrastMax: this.contrastMax
+			});
 		}
 	}
 
 	/**
-	 * Get current threshold
+	 * Get current contrast limits
+	 * @returns {{min: number, max: number}}
+	 */
+	getContrastLimits() {
+		return { min: this.contrastMin, max: this.contrastMax };
+	}
+
+	/**
+	 * Set the lower contrast limit only (kept for backward compatibility)
+	 * @param {number} threshold - Threshold 0-1
+	 */
+	setThreshold(threshold) {
+		this.setContrastLimits(threshold, this.contrastMax);
+	}
+
+	/**
+	 * Get the lower contrast limit
 	 * @returns {number}
 	 */
 	getThreshold() {
-		return this.threshold;
+		return this.contrastMin;
 	}
 
 	/**

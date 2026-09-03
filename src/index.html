@@ -205,9 +205,14 @@
 						</select>
 					</div>
 					<div class="volume-control-row">
-						<label>Threshold:</label>
-						<input type="range" class="volume-threshold" min="0" max="100" value="10">
-						<span class="volume-threshold-value">10%</span>
+						<label>Contrast:</label>
+						<div class="range-slider volume-contrast">
+							<div class="range-slider-track"></div>
+							<div class="range-slider-fill"></div>
+							<input type="range" class="volume-contrast-min" min="0" max="100" value="10" aria-label="Lower contrast limit">
+							<input type="range" class="volume-contrast-max" min="0" max="100" value="100" aria-label="Upper contrast limit">
+						</div>
+						<span class="volume-contrast-value">10&ndash;100%</span>
 					</div>
 					<div class="volume-control-row">
 						<label>Opacity:</label>

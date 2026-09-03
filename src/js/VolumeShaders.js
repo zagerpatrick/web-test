@@ -25,7 +25,8 @@ precision highp int;
 uniform highp sampler3D uVolume;
 uniform sampler2D uColormap;
 uniform vec3 uVolumeSize;
-uniform float uThreshold;
+uniform float uContrastMin;
+uniform float uContrastMax;
 uniform float uOpacity;
 uniform int uStepCount;
 uniform int uRenderMode; // 0 = MIP, 1 = Opacity
@@ -51,6 +52,11 @@ float sampleVolume(vec3 pos) {
 	// Clamp to valid range with small epsilon
 	vec3 clampedPos = clamp(pos, 0.001, 0.999);
 	return texture(uVolume, clampedPos).r;
+}
+
+// Map raw intensity into [0,1] using the contrast limits (values above max saturate)
+float applyContrast(float value) {
+	return clamp((value - uContrastMin) / max(uContrastMax - uContrastMin, 1e-5), 0.0, 1.0);
 }
 
 // Apply colormap lookup
@@ -92,19 +98,19 @@ void main() {
 
 			float intensity = sampleVolume(pos);
 
-			// Apply threshold for MIP
-			if (intensity > uThreshold) {
+			// Voxels below the lower contrast limit are invisible
+			if (intensity > uContrastMin) {
 				maxIntensity = max(maxIntensity, intensity);
 			}
 
 			pos += rayStep;
 		}
 
-		if (maxIntensity <= uThreshold) {
+		if (maxIntensity <= uContrastMin) {
 			discard;
 		}
 
-		vec3 color = applyColormap(maxIntensity);
+		vec3 color = applyColormap(applyContrast(maxIntensity));
 		gl_FragColor = vec4(color, uOpacity);
 
 	} else {
@@ -120,12 +126,12 @@ void main() {
 
 			float intensity = sampleVolume(pos);
 
-			if (intensity > uThreshold) {
-				// Map intensity to opacity
-				float alpha = (intensity - uThreshold) / (1.0 - uThreshold);
-				alpha *= uOpacity * 0.5; // Scale down for accumulation
+			if (intensity > uContrastMin) {
+				// Map contrast-normalized intensity to opacity
+				float normalized = applyContrast(intensity);
+				float alpha = normalized * uOpacity * 0.5; // Scale down for accumulation
 
-				vec3 color = applyColormap(intensity);
+				vec3 color = applyColormap(normalized);
 
 				// Front-to-back compositing
 				accumulatedColor.rgb += (1.0 - accumulatedColor.a) * alpha * color;
@@ -154,7 +160,8 @@ void main() {
  */
 export const SHADER_DEFAULTS = {
 	stepCount: 256,
-	threshold: 0.1,
+	contrastMin: 0.1,
+	contrastMax: 1.0,
 	opacity: 1.0,
 	renderMode: 0 // MIP
 };

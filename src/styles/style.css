@@ -326,13 +326,120 @@ p {
 	min-width: 100px;
 }
 
-.volume-threshold-value,
+.volume-contrast-value,
 .volume-opacity-value,
 .volume-quality-value {
 	font-size: 11pt;
 	color: #888;
 	min-width: 45px;
 	text-align: right;
+}
+
+.volume-contrast-value {
+	min-width: 70px;
+}
+
+/* Dual-handle range slider (contrast limits) */
+.range-slider {
+	position: relative;
+	flex: 1;
+	min-width: 100px;
+	height: 20px;
+}
+
+.range-slider-track,
+.range-slider-fill {
+	position: absolute;
+	top: 50%;
+	height: 4px;
+	transform: translateY(-50%);
+	border-radius: 2px;
+	pointer-events: none;
+}
+
+.range-slider-track {
+	left: 0;
+	right: 0;
+	background: #555;
+}
+
+.range-slider-fill {
+	background: #4a9eff;
+}
+
+.range-slider input[type="range"] {
+	position: absolute;
+	left: 0;
+	top: 0;
+	width: 100%;
+	height: 100%;
+	margin: 0;
+	background: transparent;
+	pointer-events: none;
+	-webkit-appearance: none;
+	appearance: none;
+}
+
+.range-slider input[type="range"]:focus {
+	outline: none;
+}
+
+.range-slider input[type="range"]::-webkit-slider-runnable-track {
+	background: transparent;
+	height: 100%;
+}
+
+.range-slider input[type="range"]::-moz-range-track {
+	background: transparent;
+	height: 100%;
+}
+
+.range-slider input[type="range"]::-webkit-slider-thumb {
+	-webkit-appearance: none;
+	appearance: none;
+	pointer-events: auto;
+	width: 14px;
+	height: 14px;
+	margin-top: 3px;
+	border-radius: 50%;
+	background: #ddd;
+	border: 1px solid #333;
+	cursor: pointer;
+}
+
+.range-slider input[type="range"]::-moz-range-thumb {
+	pointer-events: auto;
+	width: 14px;
+	height: 14px;
+	border-radius: 50%;
+	background: #ddd;
+	border: 1px solid #333;
+	cursor: pointer;
+}
+
+.range-slider input[type="range"]:focus::-webkit-slider-thumb {
+	border-color: #4a9eff;
+}
+
+.range-slider input[type="range"]:focus::-moz-range-thumb {
+	border-color: #4a9eff;
+}
+
+/* The max handle sits on top by default; swap when the min handle is being dragged */
+.range-slider .volume-contrast-max {
+	z-index: 2;
+}
+
+.range-slider .volume-contrast-min {
+	z-index: 3;
+}
+
+.range-slider.max-active .volume-contrast-max {
+	z-index: 3;
+}
+
+.range-slider.max-active .volume-contrast-min {
+	z-index: 2;
 }
 
 /* Volume progress styling */

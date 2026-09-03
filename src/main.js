@@ -163,8 +163,11 @@ function initVolumeViews() {
 		// Volume-specific controls
 		const renderModeSelect = wrapper.querySelector('.volume-render-mode');
 		const colormapSelect = wrapper.querySelector('.volume-colormap');
-		const thresholdSlider = wrapper.querySelector('.volume-threshold');
-		const thresholdValue = wrapper.querySelector('.volume-threshold-value');
+		const contrastSlider = wrapper.querySelector('.volume-contrast');
+		const contrastMinSlider = wrapper.querySelector('.volume-contrast-min');
+		const contrastMaxSlider = wrapper.querySelector('.volume-contrast-max');
+		const contrastFill = wrapper.querySelector('.range-slider-fill');
+		const contrastValue = wrapper.querySelector('.volume-contrast-value');
 		const opacitySlider = wrapper.querySelector('.volume-opacity');
 		const opacityValue = wrapper.querySelector('.volume-opacity-value');
 		const qualitySlider = wrapper.querySelector('.volume-quality');
@@ -177,7 +180,8 @@ function initVolumeViews() {
 			enableControls: true,
 			colormap: 'grayscale',
 			renderMode: 'mip',
-			threshold: 0.1,
+			contrastMin: 0.1,
+			contrastMax: 1.0,
 			opacity: 1.0,
 			stepCount: 256,
 			onMetadataLoaded: (metadata) => {
@@ -249,13 +253,35 @@ function initVolumeViews() {
 			});
 		}
 
-		// Wire up threshold slider
-		if (thresholdSlider) {
-			thresholdSlider.addEventListener('input', () => {
-				const value = parseInt(thresholdSlider.value);
-				view.setThreshold(value / 100);
-				if (thresholdValue) thresholdValue.textContent = `${value}%`;
-			});
+		// Wire up contrast limits (dual-handle slider, ImageJ / napari style)
+		if (contrastMinSlider && contrastMaxSlider) {
+			const applyContrast = (activeHandle) => {
+				let min = parseInt(contrastMinSlider.value);
+				let max = parseInt(contrastMaxSlider.value);
+				// Keep the handles from crossing: the dragged handle pushes the other
+				if (min > max) {
+					if (activeHandle === contrastMinSlider) {
+						max = min;
+						contrastMaxSlider.value = max;
+					} else {
+						min = max;
+						contrastMinSlider.value = min;
+					}
+				}
+				view.setContrastLimits(min / 100, max / 100);
+				if (contrastFill) {
+					contrastFill.style.left = `${min}%`;
+					contrastFill.style.width = `${max - min}%`;
+				}
+				if (contrastValue) contrastValue.textContent = `${min}–${max}%`;
+				// Raise the handle being dragged so it stays grabbable at the extremes
+				if (contrastSlider) {
+					contrastSlider.classList.toggle('max-active', activeHandle === contrastMaxSlider);
+				}
+			};
+			contrastMinSlider.addEventListener('input', () => applyContrast(contrastMinSlider));
+			contrastMaxSlider.addEventListener('input', () => applyContrast(contrastMaxSlider));
+			applyContrast(contrastMaxSlider);
 		}
 
 		// Wire up opacity slider
