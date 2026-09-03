@@ -13,7 +13,7 @@ import OrientationMarker from './OrientationMarker.js';
  * - Camera with TrackballControls
  * - One persistent R8 3D texture, updated in place from a decoded-frame cache
  * - Independent playback state
- * - Volume-specific controls (render mode, contrast limits, colormap, etc.)
+ * - Volume-specific controls (contrast limits, gamma)
  */
 export default class VolumeTimeseriesView {
 	/**
@@ -27,12 +27,10 @@ export default class VolumeTimeseriesView {
 	 * @param {number} options.prefetchRadius - Frames decoded ahead/behind the current one (default: 6)
 	 * @param {number} options.defaultPlaySpeed - Default playback speed in ms (default: 250)
 	 * @param {boolean} options.enableControls - Enable TrackballControls (default: true)
-	 * @param {string} options.colormap - Initial colormap (default: 'grayscale')
-	 * @param {string} options.renderMode - Initial render mode: 'mip' or 'opacity' (default: 'mip')
 	 * @param {number} options.contrastMin - Initial lower contrast limit 0-1 (default: 0.1)
 	 * @param {number} options.contrastMax - Initial upper contrast limit 0-1 (default: 1.0)
-	 * @param {number} options.opacity - Initial opacity 0-1 (default: 1.0)
-	 * @param {number} options.stepCount - Ray marching steps (default: 256)
+	 * @param {number} options.gamma - Initial gamma exponent (default: 1.0)
+	 * @param {number} options.stepCount - Ray marching steps (default: 512)
 	 * @param {Function} options.onLoadProgress - Callback for load progress (loaded, total)
 	 * @param {Function} options.onLoadComplete - Callback when initial load complete
 	 * @param {Function} options.onFrameChange - Callback when frame changes (index)
@@ -48,12 +46,10 @@ export default class VolumeTimeseriesView {
 		this.enableControls = options.enableControls !== false;
 
 		// Volume rendering settings
-		this.colormap = options.colormap || 'grayscale';
-		this.renderMode = options.renderMode || 'mip';
 		this.contrastMin = options.contrastMin ?? 0.1;
 		this.contrastMax = options.contrastMax ?? 1.0;
-		this.opacity = options.opacity ?? 1.0;
-		this.stepCount = options.stepCount || 256;
+		this.gamma = options.gamma ?? 1.0;
+		this.stepCount = options.stepCount || 512;
 
 		// Callbacks
 		this.onLoadProgress = options.onLoadProgress || (() => {});
@@ -312,12 +308,10 @@ export default class VolumeTimeseriesView {
 		if (!this.volumeTexture) {
 			this.volumeTexture = this.volumeLoader.createTexture(data);
 			this.volumeMaterial = this.materialFactory.createMaterial(this.volumeTexture, {
-				colormap: this.colormap,
 				contrastMin: this.contrastMin,
 				contrastMax: this.contrastMax,
-				opacity: this.opacity,
-				stepCount: this.stepCount,
-				renderMode: this.renderMode
+				gamma: this.gamma,
+				stepCount: this.stepCount
 			});
 			this.volumeBox.material = this.volumeMaterial;
 		} else if (this.volumeTexture.image.data !== data) {
@@ -420,6 +414,23 @@ export default class VolumeTimeseriesView {
 	}
 
 	/**
+	 * Set playback speed in frames per second
+	 * @param {number} fps - Frames per second (> 0)
+	 */
+	setFps(fps) {
+		if (!(fps > 0)) return;
+		this.playSpeed = 1000 / fps;
+	}
+
+	/**
+	 * Get playback speed in frames per second
+	 * @returns {number}
+	 */
+	getFps() {
+		return 1000 / this.playSpeed;
+	}
+
+	/**
 	 * Internal playback loop
 	 * @private
 	 */
@@ -453,27 +464,8 @@ export default class VolumeTimeseriesView {
 	// Volume-specific methods
 
 	/**
-	 * Set render mode
-	 * @param {string} mode - 'mip' or 'opacity'
-	 */
-	setRenderMode(mode) {
-		this.renderMode = mode;
-		if (this.volumeMaterial) {
-			this.materialFactory.updateMaterial(this.volumeMaterial, { renderMode: mode });
-		}
-	}
-
-	/**
-	 * Get current render mode
-	 * @returns {string}
-	 */
-	getRenderMode() {
-		return this.renderMode;
-	}
-
-	/**
 	 * Set contrast limits (like ImageJ / napari). Voxels at or below min are
-	 * hidden, voxels at or above max saturate to the top of the colormap.
+	 * hidden, voxels at or above max saturate to white.
 	 * @param {number} min - Lower limit 0-1
 	 * @param {number} max - Upper limit 0-1
 	 */
@@ -513,41 +505,23 @@ export default class VolumeTimeseriesView {
 	}
 
 	/**
-	 * Set global opacity
-	 * @param {number} opacity - Opacity 0-1
+	 * Set gamma exponent applied after contrast limits (napari convention: value ^ gamma).
+	 * Values below 1 brighten dim voxels, values above 1 darken them.
+	 * @param {number} gamma - Gamma exponent (> 0)
 	 */
-	setOpacity(opacity) {
-		this.opacity = opacity;
+	setGamma(gamma) {
+		this.gamma = Math.max(0.01, gamma);
 		if (this.volumeMaterial) {
-			this.materialFactory.updateMaterial(this.volumeMaterial, { opacity });
+			this.materialFactory.updateMaterial(this.volumeMaterial, { gamma: this.gamma });
 		}
 	}
 
 	/**
-	 * Get current opacity
+	 * Get current gamma
 	 * @returns {number}
 	 */
-	getOpacity() {
-		return this.opacity;
-	}
-
-	/**
-	 * Set colormap
-	 * @param {string} name - Colormap name
-	 */
-	setColormap(name) {
-		this.colormap = name;
-		if (this.volumeMaterial) {
-			this.materialFactory.updateMaterial(this.volumeMaterial, { colormap: name });
-		}
-	}
-
-	/**
-	 * Get current colormap
-	 * @returns {string}
-	 */
-	getColormap() {
-		return this.colormap;
+	getGamma() {
+		return this.gamma;
 	}
 
 	/**
@@ -567,14 +541,6 @@ export default class VolumeTimeseriesView {
 	 */
 	getStepCount() {
 		return this.stepCount;
-	}
-
-	/**
-	 * Get available colormap names
-	 * @returns {string[]}
-	 */
-	getColormapNames() {
-		return this.materialFactory ? this.materialFactory.getColormapNames() : [];
 	}
 
 	/**
@@ -723,7 +689,7 @@ export default class VolumeTimeseriesView {
 			this.volumeLoader = null;
 		}
 
-		// Dispose material factory (clears colormap textures)
+		// Dispose material factory
 		if (this.materialFactory) {
 			this.materialFactory.dispose();
 			this.materialFactory = null;

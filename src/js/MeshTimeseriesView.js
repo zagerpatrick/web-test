@@ -456,6 +456,23 @@ export default class MeshTimeseriesView {
 	}
 
 	/**
+	 * Set playback speed in frames per second
+	 * @param {number} fps - Frames per second (> 0)
+	 */
+	setFps(fps) {
+		if (!(fps > 0)) return;
+		this.playSpeed = 1000 / fps;
+	}
+
+	/**
+	 * Get playback speed in frames per second
+	 * @returns {number}
+	 */
+	getFps() {
+		return 1000 / this.playSpeed;
+	}
+
+	/**
 	 * Internal playback loop
 	 * @private
 	 */

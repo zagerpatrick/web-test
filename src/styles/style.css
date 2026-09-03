@@ -123,14 +123,23 @@ p {
 	color: #888;
 }
 
-.view-speed {
-	width: 80px;
+.view-fps {
+	width: 64px;
+	background: #444;
+	color: #ddd;
+	border: 1px solid #555;
+	border-radius: 4px;
+	padding: 4px 6px;
+	font-size: 11pt;
 }
 
-.view-speed-value {
-	font-size: 11pt;
-	color: #888;
-	min-width: 45px;
+.view-fps:hover {
+	background: #505050;
+}
+
+.view-fps:focus {
+	outline: none;
+	border-color: #4a9eff;
 }
 
 /* View preset buttons - positioned above canvas with matching background */
@@ -302,33 +311,13 @@ p {
 	min-width: 70px;
 }
 
-.volume-control-row select {
-	background: #444;
-	color: #ddd;
-	border: 1px solid #555;
-	padding: 4px 8px;
-	border-radius: 4px;
-	font-size: 11pt;
-	cursor: pointer;
-}
-
-.volume-control-row select:hover {
-	background: #505050;
-}
-
-.volume-control-row select:focus {
-	outline: none;
-	border-color: #4a9eff;
-}
-
 .volume-control-row input[type="range"] {
 	flex: 1;
 	min-width: 100px;
 }
 
 .volume-contrast-value,
-.volume-opacity-value,
-.volume-quality-value {
+.volume-gamma-value {
 	font-size: 11pt;
 	color: #888;
 	min-width: 45px;

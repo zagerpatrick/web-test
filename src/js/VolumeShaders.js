@@ -1,9 +1,8 @@
 /**
  * VolumeShaders.js - GLSL shaders for volume rendering
  *
- * Supports two rendering modes:
- * - MIP (Maximum Intensity Projection): Track maximum value along ray
- * - Opacity: Front-to-back compositing with early termination
+ * Maximum Intensity Projection (MIP): track the maximum value along each ray,
+ * then apply contrast limits and gamma before writing a grayscale color.
  */
 
 export const volumeVertexShader = /* glsl */`
@@ -23,13 +22,11 @@ precision highp float;
 precision highp int;
 
 uniform highp sampler3D uVolume;
-uniform sampler2D uColormap;
 uniform vec3 uVolumeSize;
 uniform float uContrastMin;
 uniform float uContrastMax;
-uniform float uOpacity;
+uniform float uGamma;
 uniform int uStepCount;
-uniform int uRenderMode; // 0 = MIP, 1 = Opacity
 uniform float uJitterOffset;
 
 varying vec3 vOrigin;
@@ -54,14 +51,11 @@ float sampleVolume(vec3 pos) {
 	return texture(uVolume, clampedPos).r;
 }
 
-// Map raw intensity into [0,1] using the contrast limits (values above max saturate)
-float applyContrast(float value) {
-	return clamp((value - uContrastMin) / max(uContrastMax - uContrastMin, 1e-5), 0.0, 1.0);
-}
-
-// Apply colormap lookup
-vec3 applyColormap(float value) {
-	return texture(uColormap, vec2(value, 0.5)).rgb;
+// Map raw intensity into [0,1] using the contrast limits (values above max saturate),
+// then apply gamma (napari convention: value ^ gamma)
+float applyContrastAndGamma(float value) {
+	float normalized = clamp((value - uContrastMin) / max(uContrastMax - uContrastMin, 1e-5), 0.0, 1.0);
+	return pow(normalized, uGamma);
 }
 
 void main() {
@@ -85,73 +79,32 @@ void main() {
 	vec3 rayStart = vOrigin + rayDir * tStart;
 	vec3 rayStep = rayDir * stepSize;
 
-	if (uRenderMode == 0) {
-		// MIP (Maximum Intensity Projection)
-		float maxIntensity = 0.0;
-		vec3 pos = rayStart;
+	// MIP (Maximum Intensity Projection)
+	float maxIntensity = 0.0;
+	vec3 pos = rayStart;
 
-		for (int i = 0; i < 512; i++) {
-			if (i >= uStepCount) break;
+	for (int i = 0; i < 512; i++) {
+		if (i >= uStepCount) break;
 
-			float t = tStart + float(i) * stepSize;
-			if (t >= bounds.y) break;
+		float t = tStart + float(i) * stepSize;
+		if (t >= bounds.y) break;
 
-			float intensity = sampleVolume(pos);
+		float intensity = sampleVolume(pos);
 
-			// Voxels below the lower contrast limit are invisible
-			if (intensity > uContrastMin) {
-				maxIntensity = max(maxIntensity, intensity);
-			}
-
-			pos += rayStep;
+		// Voxels below the lower contrast limit are invisible
+		if (intensity > uContrastMin) {
+			maxIntensity = max(maxIntensity, intensity);
 		}
 
-		if (maxIntensity <= uContrastMin) {
-			discard;
-		}
-
-		vec3 color = applyColormap(applyContrast(maxIntensity));
-		gl_FragColor = vec4(color, uOpacity);
-
-	} else {
-		// Opacity-based front-to-back compositing
-		vec4 accumulatedColor = vec4(0.0);
-		vec3 pos = rayStart;
-
-		for (int i = 0; i < 512; i++) {
-			if (i >= uStepCount) break;
-
-			float t = tStart + float(i) * stepSize;
-			if (t >= bounds.y) break;
-
-			float intensity = sampleVolume(pos);
-
-			if (intensity > uContrastMin) {
-				// Map contrast-normalized intensity to opacity
-				float normalized = applyContrast(intensity);
-				float alpha = normalized * uOpacity * 0.5; // Scale down for accumulation
-
-				vec3 color = applyColormap(normalized);
-
-				// Front-to-back compositing
-				accumulatedColor.rgb += (1.0 - accumulatedColor.a) * alpha * color;
-				accumulatedColor.a += (1.0 - accumulatedColor.a) * alpha;
-
-				// Early termination when nearly opaque
-				if (accumulatedColor.a >= 0.95) {
-					break;
-				}
-			}
-
-			pos += rayStep;
-		}
-
-		if (accumulatedColor.a < 0.01) {
-			discard;
-		}
-
-		gl_FragColor = accumulatedColor;
+		pos += rayStep;
 	}
+
+	if (maxIntensity <= uContrastMin) {
+		discard;
+	}
+
+	float gray = applyContrastAndGamma(maxIntensity);
+	gl_FragColor = vec4(vec3(gray), 1.0);
 }
 `;
 
@@ -159,17 +112,8 @@ void main() {
  * Shader configuration defaults
  */
 export const SHADER_DEFAULTS = {
-	stepCount: 256,
+	stepCount: 512,
 	contrastMin: 0.1,
 	contrastMax: 1.0,
-	opacity: 1.0,
-	renderMode: 0 // MIP
-};
-
-/**
- * Render mode constants
- */
-export const RENDER_MODES = {
-	MIP: 0,
-	OPACITY: 1
+	gamma: 1.0
 };

@@ -13,7 +13,7 @@
     1.0
   ],
   "valueRange": [
-    0,
+    5,
     255
   ],
   "files": [
@@ -85,7 +85,7 @@
   ],
   "compression": "brotli",
   "processing": {
-    "intensityMin": 200,
+    "intensityMin": 0,
     "intensityMax": 5000,
     "originalDtype": "int16",
     "converted": "8-bit",

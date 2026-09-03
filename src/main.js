@@ -52,8 +52,7 @@ function initMeshViews() {
 		const playBtn = wrapper.querySelector('.view-play');
 		const timeline = wrapper.querySelector('.view-timeline');
 		const frameSpan = wrapper.querySelector('.view-frame');
-		const speedSlider = wrapper.querySelector('.view-speed');
-		const speedValue = wrapper.querySelector('.view-speed-value');
+		const fpsInput = wrapper.querySelector('.view-fps');
 		const progressBar = wrapper.querySelector('.progress-bar');
 		const progressText = wrapper.querySelector('.progress-text');
 		const progressContainer = wrapper.querySelector('.view-progress');
@@ -108,13 +107,9 @@ function initMeshViews() {
 			});
 		}
 
-		// Wire up speed slider
-		if (speedSlider) {
-			speedSlider.addEventListener('input', () => {
-				const speed = parseInt(speedSlider.value);
-				view.setPlaySpeed(speed);
-				if (speedValue) speedValue.textContent = `${speed}ms`;
-			});
+		// Wire up frames-per-second number box
+		if (fpsInput) {
+			wireFpsInput(fpsInput, view);
 		}
 
 		// Wire up view preset buttons
@@ -154,36 +149,29 @@ function initVolumeViews() {
 		const playBtn = wrapper.querySelector('.view-play');
 		const timeline = wrapper.querySelector('.view-timeline');
 		const frameSpan = wrapper.querySelector('.view-frame');
-		const speedSlider = wrapper.querySelector('.view-speed');
-		const speedValue = wrapper.querySelector('.view-speed-value');
+		const fpsInput = wrapper.querySelector('.view-fps');
 		const progressBar = wrapper.querySelector('.progress-bar');
 		const progressText = wrapper.querySelector('.progress-text');
 		const progressContainer = wrapper.querySelector('.view-progress');
 
 		// Volume-specific controls
-		const renderModeSelect = wrapper.querySelector('.volume-render-mode');
-		const colormapSelect = wrapper.querySelector('.volume-colormap');
 		const contrastSlider = wrapper.querySelector('.volume-contrast');
 		const contrastMinSlider = wrapper.querySelector('.volume-contrast-min');
 		const contrastMaxSlider = wrapper.querySelector('.volume-contrast-max');
 		const contrastFill = wrapper.querySelector('.range-slider-fill');
 		const contrastValue = wrapper.querySelector('.volume-contrast-value');
-		const opacitySlider = wrapper.querySelector('.volume-opacity');
-		const opacityValue = wrapper.querySelector('.volume-opacity-value');
-		const qualitySlider = wrapper.querySelector('.volume-quality');
-		const qualityValue = wrapper.querySelector('.volume-quality-value');
+		const gammaSlider = wrapper.querySelector('.volume-gamma');
+		const gammaValue = wrapper.querySelector('.volume-gamma-value');
 
 		// Create the volume view
 		const view = new VolumeTimeseriesView({
 			elem,
 			basePath,
 			enableControls: true,
-			colormap: 'grayscale',
-			renderMode: 'mip',
 			contrastMin: 0.1,
 			contrastMax: 1.0,
-			opacity: 1.0,
-			stepCount: 256,
+			gamma: 1.0,
+			stepCount: 512,
 			onMetadataLoaded: (metadata) => {
 				// Update timeline max based on frame count
 				if (timeline) {
@@ -230,27 +218,9 @@ function initVolumeViews() {
 			});
 		}
 
-		// Wire up speed slider
-		if (speedSlider) {
-			speedSlider.addEventListener('input', () => {
-				const speed = parseInt(speedSlider.value);
-				view.setPlaySpeed(speed);
-				if (speedValue) speedValue.textContent = `${speed}ms`;
-			});
-		}
-
-		// Wire up render mode selector
-		if (renderModeSelect) {
-			renderModeSelect.addEventListener('change', () => {
-				view.setRenderMode(renderModeSelect.value);
-			});
-		}
-
-		// Wire up colormap selector
-		if (colormapSelect) {
-			colormapSelect.addEventListener('change', () => {
-				view.setColormap(colormapSelect.value);
-			});
+		// Wire up frames-per-second number box
+		if (fpsInput) {
+			wireFpsInput(fpsInput, view);
 		}
 
 		// Wire up contrast limits (dual-handle slider, ImageJ / napari style)
@@ -284,21 +254,12 @@ function initVolumeViews() {
 			applyContrast(contrastMaxSlider);
 		}
 
-		// Wire up opacity slider
-		if (opacitySlider) {
-			opacitySlider.addEventListener('input', () => {
-				const value = parseInt(opacitySlider.value);
-				view.setOpacity(value / 100);
-				if (opacityValue) opacityValue.textContent = `${value}%`;
-			});
-		}
-
-		// Wire up quality slider
-		if (qualitySlider) {
-			qualitySlider.addEventListener('input', () => {
-				const value = parseInt(qualitySlider.value);
-				view.setStepCount(value);
-				if (qualityValue) qualityValue.textContent = String(value);
+		// Wire up gamma slider (slider is in hundredths: 20-200 -> 0.20-2.00)
+		if (gammaSlider) {
+			gammaSlider.addEventListener('input', () => {
+				const gamma = parseInt(gammaSlider.value) / 100;
+				view.setGamma(gamma);
+				if (gammaValue) gammaValue.textContent = gamma.toFixed(2);
 			});
 		}
 
@@ -326,12 +287,44 @@ function initVolumeViews() {
 }
 
 /**
+ * Wire a number input (frames per second) to a view's playback speed.
+ * Applies on every keystroke / spinner click, and snaps out-of-range or
+ * empty values back into the input's min/max when the box loses focus.
+ * @param {HTMLInputElement} input
+ * @param {{setFps: Function, getFps: Function}} view
+ */
+function wireFpsInput(input, view) {
+	const min = parseFloat(input.min) || 1;
+	const max = parseFloat(input.max) || 60;
+
+	const apply = () => {
+		const fps = parseFloat(input.value);
+		if (!Number.isFinite(fps) || fps <= 0) return;
+		view.setFps(Math.min(max, Math.max(min, fps)));
+	};
+
+	input.addEventListener('input', apply);
+	input.addEventListener('change', () => {
+		apply();
+		// Normalise what the user sees to the value actually in use
+		input.value = String(view.getFps());
+	});
+
+	// Initialise the view from the input's starting value
+	apply();
+}
+
+/**
  * Setup keyboard controls that work on the focused view
  */
 function setupKeyboardControls() {
 	document.addEventListener('keydown', (e) => {
 		// Only handle if a view is focused
 		if (!focusedView) return;
+
+		// Leave keys alone while typing in a form control (e.g. the FPS box)
+		const tag = e.target && e.target.tagName;
+		if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
 
 		const { view, playBtn } = focusedView;
 

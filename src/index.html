@@ -69,9 +69,8 @@
 					<input type="range" class="view-timeline" min="0" max="0" value="0">
 					<span class="view-frame">000</span>
 					<div class="view-speed-control">
-						<label>Speed:</label>
-						<input type="range" class="view-speed" min="16" max="500" value="200">
-						<span class="view-speed-value">200ms</span>
+						<label>FPS:</label>
+						<input type="number" class="view-fps" min="1" max="60" step="1" value="5" aria-label="Playback speed in frames per second">
 					</div>
 				</div>
 				<div class="view-progress">
@@ -124,9 +123,8 @@
 					<input type="range" class="view-timeline" min="0" max="0" value="0">
 					<span class="view-frame">000</span>
 					<div class="view-speed-control">
-						<label>Speed:</label>
-						<input type="range" class="view-speed" min="16" max="500" value="200">
-						<span class="view-speed-value">200ms</span>
+						<label>FPS:</label>
+						<input type="number" class="view-fps" min="1" max="60" step="1" value="5" aria-label="Playback speed in frames per second">
 					</div>
 				</div>
 				<div class="view-progress">
@@ -148,9 +146,8 @@
 
 			<p>
 				The volume view below demonstrates 3D volume rendering using ray marching.
-				Use the controls to adjust the visualization settings. MIP (Maximum Intensity
-				Projection) shows the brightest voxels along each ray, while Opacity mode
-				uses front-to-back compositing.
+				It shows a Maximum Intensity Projection (MIP): the brightest voxel along each
+				ray. Use the contrast limits and gamma sliders to adjust the display.
 			</p>
 
 			<!-- Volume view with its own controls -->
@@ -189,22 +186,6 @@
 						<span class="view-frame">000</span>
 					</div>
 					<div class="volume-control-row">
-						<label>Mode:</label>
-						<select class="volume-render-mode">
-							<option value="mip" selected>MIP</option>
-							<option value="opacity">Opacity</option>
-						</select>
-						<label>Colormap:</label>
-						<select class="volume-colormap">
-							<option value="grayscale" selected>Grayscale</option>
-							<option value="viridis">Viridis</option>
-							<option value="hot">Hot</option>
-							<option value="bone">Bone</option>
-							<option value="cool">Cool</option>
-							<option value="plasma">Plasma</option>
-						</select>
-					</div>
-					<div class="volume-control-row">
 						<label>Contrast:</label>
 						<div class="range-slider volume-contrast">
 							<div class="range-slider-track"></div>
@@ -215,19 +196,13 @@
 						<span class="volume-contrast-value">10&ndash;100%</span>
 					</div>
 					<div class="volume-control-row">
-						<label>Opacity:</label>
-						<input type="range" class="volume-opacity" min="0" max="100" value="100">
-						<span class="volume-opacity-value">100%</span>
-					</div>
-					<div class="volume-control-row">
-						<label>Quality:</label>
-						<input type="range" class="volume-quality" min="64" max="512" value="256" step="32">
-						<span class="volume-quality-value">256</span>
+						<label>Gamma:</label>
+						<input type="range" class="volume-gamma" min="20" max="200" value="100">
+						<span class="volume-gamma-value">1.00</span>
 					</div>
 					<div class="view-speed-control">
-						<label>Speed:</label>
-						<input type="range" class="view-speed" min="16" max="500" value="200">
-						<span class="view-speed-value">200ms</span>
+						<label>FPS:</label>
+						<input type="number" class="view-fps" min="1" max="60" step="1" value="5" aria-label="Playback speed in frames per second">
 					</div>
 				</div>
 				<div class="view-progress volume-progress">

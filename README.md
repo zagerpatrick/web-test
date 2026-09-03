@@ -94,6 +94,6 @@ The `scripts/` directory contains utilities for converting raw data:
 
 - **Multi-view rendering**: Multiple independent 3D views using scissor-based rendering
 - **Mesh timeseries**: Animated playback of mesh sequences
-- **Volume rendering**: Ray marching with MIP and opacity modes
+- **Volume rendering**: Grayscale Maximum Intensity Projection via ray marching
 - **Interactive controls**: Rotate, zoom, and change view angles
-- **Colormaps**: Multiple visualization colormaps for volume data
+- **Display controls**: ImageJ / napari style contrast limits and gamma for volume data
