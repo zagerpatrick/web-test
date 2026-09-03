@@ -1,1 +1,33 @@
+# Dependencies
 node_modules/
+
+# Build output
+dist/
+
+# Raw source data (large files - not needed for deployment)
+raw-data/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# IDE/Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+
+# R
+.Rhistory
+
+# Claude Code local settings
+.claude/settings.local.json

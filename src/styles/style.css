@@ -1,0 +1,380 @@
+body {
+	font-size: 16pt;
+	background-color: #222;
+	color: #bbb;
+	margin: 0;
+	padding: 0;
+}
+
+/* Full-page canvas (behind content) - uses absolute positioning per Three.js manual */
+#c {
+	position: absolute;
+	left: 0;
+	top: 0;
+	width: 100%;
+	height: 100%;
+	z-index: -1;
+	pointer-events: none;  /* Allow clicks through to content */
+}
+
+/* Article content container */
+.content {
+	max-width: 800px;
+	margin: 0 auto;
+	padding: 20px 20px 60px 20px;
+	position: relative;
+	z-index: 1;
+}
+
+h1 {
+	text-align: center;
+	margin-top: 20px;
+	margin-bottom: 30px;
+}
+
+p {
+	max-width: 65ch;
+	text-align: left;
+	line-height: 1.6;
+	margin: 20px auto;
+}
+
+/* Mesh view wrapper - contains view and controls */
+.mesh-view-wrapper {
+	margin: 40px 0;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+}
+
+/* The actual view element that Three.js renders into */
+.mesh-view {
+	width: 100%;
+	max-width: 600px;
+	height: 400px;
+	margin: 0 auto;
+	display: block;
+	background: transparent;
+	pointer-events: auto;  /* Re-enable for OrbitControls */
+	border-radius: 0;  /* Remove rounding - cap provides it */
+	cursor: grab;
+}
+
+.mesh-view:active {
+	cursor: grabbing;
+}
+
+/* Per-view controls */
+.view-controls {
+	display: flex;
+	justify-content: center;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 15px;
+	margin-top: 15px;
+	padding: 12px 20px;
+	background: #333;
+	border-radius: 8px;
+	max-width: 600px;
+	width: 100%;
+	box-sizing: border-box;
+}
+
+.view-play {
+	background: #4a9eff;
+	color: white;
+	border: none;
+	padding: 8px 20px;
+	font-size: 12pt;
+	border-radius: 5px;
+	cursor: pointer;
+	min-width: 80px;
+	transition: background 0.2s;
+}
+
+.view-play:hover {
+	background: #66b3ff;
+}
+
+.view-play:active {
+	background: #3a8eef;
+}
+
+.view-timeline {
+	width: 200px;
+	flex-shrink: 1;
+}
+
+.view-frame {
+	font-family: monospace;
+	font-size: 12pt;
+	color: #888;
+	min-width: 35px;
+}
+
+.view-speed-control {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.view-speed-control label {
+	font-size: 11pt;
+	color: #888;
+}
+
+.view-speed {
+	width: 80px;
+}
+
+.view-speed-value {
+	font-size: 11pt;
+	color: #888;
+	min-width: 45px;
+}
+
+/* View preset buttons - positioned above canvas with matching background */
+.view-buttons {
+	display: flex;
+	gap: 4px;
+	flex-wrap: wrap;
+	justify-content: center;
+	background: #d0d0d0;  /* Match canvas background for seamless look */
+	padding: 8px 12px;
+	border-radius: 8px 8px 0 0;  /* Only top corners rounded */
+	max-width: 600px;
+	width: 100%;
+	box-sizing: border-box;
+	margin-bottom: -1px;  /* Overlap canvas to prevent subpixel seam */
+	position: relative;
+	z-index: 1;
+}
+
+.volume-view-wrapper .view-buttons {
+	background: #000000;
+}
+
+.view-btn {
+	background: transparent;
+	color: #ddd;
+	border: none;
+	padding: 4px;
+	font-size: 10pt;
+	border-radius: 4px;
+	cursor: pointer;
+	width: 34px;
+	height: 34px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	transition: background 0.2s;
+}
+
+.view-btn svg {
+	display: block;
+}
+
+.view-btn:hover {
+	background: rgba(0, 0, 0, 0.15);
+}
+
+.view-btn:active {
+	background: rgba(0, 0, 0, 0.25);
+}
+
+/* Per-view progress bar */
+.view-progress {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	margin-top: 10px;
+	padding: 8px 16px;
+	background: #2a2a2a;
+	border-radius: 5px;
+	transition: opacity 0.3s ease-out;
+}
+
+.view-progress.hidden {
+	opacity: 0;
+	pointer-events: none;
+}
+
+.progress-label {
+	font-size: 11pt;
+	color: #666;
+}
+
+.progress-bar-wrapper {
+	width: 120px;
+	height: 6px;
+	background: #444;
+	border-radius: 3px;
+	overflow: hidden;
+}
+
+.progress-bar {
+	height: 100%;
+	width: 0%;
+	background: linear-gradient(90deg, #4a9eff, #66b3ff);
+	border-radius: 3px;
+	transition: width 0.1s ease-out;
+}
+
+.progress-text {
+	font-size: 11pt;
+	color: #666;
+	min-width: 45px;
+}
+
+/* Controls hint */
+.controls-hint {
+	font-size: 10pt;
+	color: #555;
+	text-align: center;
+	margin-top: 40px;
+}
+
+/* Volume view wrapper */
+.volume-view-wrapper {
+	margin: 40px 0;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+}
+
+/* Volume view element */
+.volume-view {
+	width: 100%;
+	max-width: 600px;
+	height: 400px;
+	margin: 0 auto;
+	display: block;
+	background: transparent;
+	pointer-events: auto;
+	border-radius: 0;  /* Remove rounding - cap provides it */
+	cursor: grab;
+}
+
+/* Bottom cap for viewers - provides rounded bottom corners */
+.view-bottom-cap {
+	background: #d0d0d0;  /* Match mesh viewer background */
+	height: 8px;
+	border-radius: 0 0 8px 8px;
+	max-width: 600px;
+	width: 100%;
+	margin-top: -1px;  /* Overlap canvas to hide seam */
+	position: relative;
+	z-index: 1;
+}
+
+.volume-view-wrapper .view-bottom-cap {
+	background: #000000;  /* Match volume viewer background */
+}
+
+.volume-view:active {
+	cursor: grabbing;
+}
+
+/* Volume controls panel */
+.volume-controls {
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+	margin-top: 15px;
+	padding: 12px 20px;
+	background: #333;
+	border-radius: 8px;
+	max-width: 600px;
+	width: 100%;
+	box-sizing: border-box;
+}
+
+.volume-control-row {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	flex-wrap: wrap;
+}
+
+.volume-control-row label {
+	font-size: 11pt;
+	color: #888;
+	min-width: 70px;
+}
+
+.volume-control-row select {
+	background: #444;
+	color: #ddd;
+	border: 1px solid #555;
+	padding: 4px 8px;
+	border-radius: 4px;
+	font-size: 11pt;
+	cursor: pointer;
+}
+
+.volume-control-row select:hover {
+	background: #505050;
+}
+
+.volume-control-row select:focus {
+	outline: none;
+	border-color: #4a9eff;
+}
+
+.volume-control-row input[type="range"] {
+	flex: 1;
+	min-width: 100px;
+}
+
+.volume-threshold-value,
+.volume-opacity-value,
+.volume-quality-value {
+	font-size: 11pt;
+	color: #888;
+	min-width: 45px;
+	text-align: right;
+}
+
+/* Volume progress styling */
+.volume-progress {
+	margin-top: 10px;
+}
+
+/* h2 styling */
+h2 {
+	text-align: center;
+	margin-top: 50px;
+	margin-bottom: 20px;
+	color: #ccc;
+}
+
+/* Responsive adjustments */
+@media (max-width: 700px) {
+	.mesh-view,
+	.volume-view {
+		height: 300px;
+	}
+
+	.view-controls,
+	.volume-controls {
+		gap: 10px;
+		padding: 10px 15px;
+	}
+
+	.view-timeline {
+		width: 150px;
+	}
+
+	.view-speed-control {
+		width: 100%;
+		justify-content: center;
+	}
+
+	.volume-control-row {
+		justify-content: center;
+	}
+
+	.volume-control-row label {
+		min-width: 60px;
+	}
+}

@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<link rel="stylesheet" href="styles/style.css">
+		<link rel="icon" href="data:;base64,iVBORw0KGgo=">
+		<meta charset="utf-8">
+		<title>Cell Mesh Timeseries Render</title>
+		<base href="">
+	</head>
+	<body>
+		<script type="importmap">{
+			"imports": {
+				"three": "https://threejs.org/build/three.module.js",
+				"three/addons/": "https://threejs.org/examples/jsm/",
+				"three/examples/jsm/": "https://threejs.org/examples/jsm/"
+			}
+		}</script>
+		<script type="module" src="main.js"></script>
+
+		<!-- Full-page canvas (behind content) -->
+		<canvas id="c"></canvas>
+
+		<article class="content">
+			<h1>Cell Mesh Analysis</h1>
+
+			<p>
+				This interactive visualization demonstrates the rendering of mesh timeseries data
+				using Three.js with the scissor-based rendering pattern. Multiple independent views
+				can be embedded inline with text content, each with its own dataset and playback controls.
+			</p>
+
+			<p>
+				The first dataset shows cellular dynamics over time. Use the controls below to
+				play through the animation or scrub through individual frames. You can also
+				rotate and zoom the view using your mouse.
+			</p>
+
+			<!-- Inline view with its own controls -->
+			<div class="mesh-view-wrapper">
+				<div class="view-buttons">
+					<button class="view-btn" data-view="iso" title="Isometric">
+						<img src="icons/iso.svg" width="30" height="30" alt="Isometric view">
+					</button>
+					<button class="view-btn" data-view="top" title="Top">
+						<img src="icons/top.svg" width="30" height="30" alt="Top view">
+					</button>
+					<button class="view-btn" data-view="bottom" title="Bottom">
+						<img src="icons/bottom.svg" width="30" height="30" alt="Bottom view">
+					</button>
+					<button class="view-btn" data-view="front" title="Front">
+						<img src="icons/front.svg" width="30" height="30" alt="Front view">
+					</button>
+					<button class="view-btn" data-view="back" title="Back">
+						<img src="icons/back.svg" width="30" height="30" alt="Back view">
+					</button>
+					<button class="view-btn" data-view="left" title="Left">
+						<img src="icons/left.svg" width="30" height="30" alt="Left view">
+					</button>
+					<button class="view-btn" data-view="right" title="Right">
+						<img src="icons/right.svg" width="30" height="30" alt="Right view">
+					</button>
+				</div>
+				<div class="mesh-view"
+					 data-view="dataset1"
+					 data-basepath="data/meshes/mesh"
+					 data-meshcount="90"></div>
+				<div class="view-bottom-cap"></div>
+				<div class="view-controls">
+					<button class="view-play">Play</button>
+					<input type="range" class="view-timeline" min="0" max="89" value="0">
+					<span class="view-frame">000</span>
+					<div class="view-speed-control">
+						<label>Speed:</label>
+						<input type="range" class="view-speed" min="16" max="500" value="200">
+						<span class="view-speed-value">200ms</span>
+					</div>
+				</div>
+				<div class="view-progress">
+					<span class="progress-label">Loading:</span>
+					<div class="progress-bar-wrapper">
+						<div class="progress-bar"></div>
+					</div>
+					<span class="progress-text">0/90</span>
+				</div>
+			</div>
+
+			<p>
+				The second view shows the same mesh data with face labels visualized as colors.
+				Blue and orange regions indicate different labeled segments. Each view operates
+				independently - you can play one while the other is paused, or rotate them to
+				different angles.
+			</p>
+
+			<div class="mesh-view-wrapper">
+				<div class="view-buttons">
+					<button class="view-btn" data-view="iso" title="Isometric">
+						<img src="icons/iso.svg" width="30" height="30" alt="Isometric view">
+					</button>
+					<button class="view-btn" data-view="top" title="Top">
+						<img src="icons/top.svg" width="30" height="30" alt="Top view">
+					</button>
+					<button class="view-btn" data-view="bottom" title="Bottom">
+						<img src="icons/bottom.svg" width="30" height="30" alt="Bottom view">
+					</button>
+					<button class="view-btn" data-view="front" title="Front">
+						<img src="icons/front.svg" width="30" height="30" alt="Front view">
+					</button>
+					<button class="view-btn" data-view="back" title="Back">
+						<img src="icons/back.svg" width="30" height="30" alt="Back view">
+					</button>
+					<button class="view-btn" data-view="left" title="Left">
+						<img src="icons/left.svg" width="30" height="30" alt="Left view">
+					</button>
+					<button class="view-btn" data-view="right" title="Right">
+						<img src="icons/right.svg" width="30" height="30" alt="Right view">
+					</button>
+				</div>
+				<div class="mesh-view"
+					 data-view="dataset2"
+					 data-basepath="data/meshes/mesh"
+					 data-meshcount="98"
+					 data-vertexcolors="true"></div>
+				<div class="view-bottom-cap"></div>
+				<div class="view-controls">
+					<button class="view-play">Play</button>
+					<input type="range" class="view-timeline" min="0" max="97" value="0">
+					<span class="view-frame">000</span>
+					<div class="view-speed-control">
+						<label>Speed:</label>
+						<input type="range" class="view-speed" min="16" max="500" value="200">
+						<span class="view-speed-value">200ms</span>
+					</div>
+				</div>
+				<div class="view-progress">
+					<span class="progress-label">Loading:</span>
+					<div class="progress-bar-wrapper">
+						<div class="progress-bar"></div>
+					</div>
+					<span class="progress-text">0/98</span>
+				</div>
+			</div>
+
+			<p>
+				The scissor-based rendering technique uses a single WebGL context shared across
+				all views, which avoids browser limitations on the number of WebGL contexts
+				(typically around 8) while efficiently sharing resources like textures and shaders.
+			</p>
+
+			<h2>Volume Rendering</h2>
+
+			<p>
+				The volume view below demonstrates 3D volume rendering using ray marching.
+				Use the controls to adjust the visualization settings. MIP (Maximum Intensity
+				Projection) shows the brightest voxels along each ray, while Opacity mode
+				uses front-to-back compositing.
+			</p>
+
+			<!-- Volume view with its own controls -->
+			<div class="volume-view-wrapper">
+				<div class="view-buttons">
+					<button class="view-btn" data-view="iso" title="Isometric">
+						<img src="icons/iso.svg" width="30" height="30" alt="Isometric view">
+					</button>
+					<button class="view-btn" data-view="top" title="Top">
+						<img src="icons/top.svg" width="30" height="30" alt="Top view">
+					</button>
+					<button class="view-btn" data-view="bottom" title="Bottom">
+						<img src="icons/bottom.svg" width="30" height="30" alt="Bottom view">
+					</button>
+					<button class="view-btn" data-view="front" title="Front">
+						<img src="icons/front.svg" width="30" height="30" alt="Front view">
+					</button>
+					<button class="view-btn" data-view="back" title="Back">
+						<img src="icons/back.svg" width="30" height="30" alt="Back view">
+					</button>
+					<button class="view-btn" data-view="left" title="Left">
+						<img src="icons/left.svg" width="30" height="30" alt="Left view">
+					</button>
+					<button class="view-btn" data-view="right" title="Right">
+						<img src="icons/right.svg" width="30" height="30" alt="Right view">
+					</button>
+				</div>
+				<div class="volume-view"
+					 data-view="volume1"
+					 data-basepath="data/volumes/"></div>
+				<div class="view-bottom-cap"></div>
+				<div class="volume-controls">
+					<div class="volume-control-row">
+						<button class="view-play">Play</button>
+						<input type="range" class="view-timeline" min="0" max="2" value="0">
+						<span class="view-frame">000</span>
+					</div>
+					<div class="volume-control-row">
+						<label>Mode:</label>
+						<select class="volume-render-mode">
+							<option value="mip" selected>MIP</option>
+							<option value="opacity">Opacity</option>
+						</select>
+						<label>Colormap:</label>
+						<select class="volume-colormap">
+							<option value="grayscale" selected>Grayscale</option>
+							<option value="viridis">Viridis</option>
+							<option value="hot">Hot</option>
+							<option value="bone">Bone</option>
+							<option value="cool">Cool</option>
+							<option value="plasma">Plasma</option>
+						</select>
+					</div>
+					<div class="volume-control-row">
+						<label>Threshold:</label>
+						<input type="range" class="volume-threshold" min="0" max="100" value="10">
+						<span class="volume-threshold-value">10%</span>
+					</div>
+					<div class="volume-control-row">
+						<label>Opacity:</label>
+						<input type="range" class="volume-opacity" min="0" max="100" value="100">
+						<span class="volume-opacity-value">100%</span>
+					</div>
+					<div class="volume-control-row">
+						<label>Quality:</label>
+						<input type="range" class="volume-quality" min="64" max="512" value="256" step="32">
+						<span class="volume-quality-value">256</span>
+					</div>
+					<div class="view-speed-control">
+						<label>Speed:</label>
+						<input type="range" class="view-speed" min="16" max="500" value="200">
+						<span class="view-speed-value">200ms</span>
+					</div>
+				</div>
+				<div class="view-progress volume-progress">
+					<span class="progress-label">Loading:</span>
+					<div class="progress-bar-wrapper">
+						<div class="progress-bar"></div>
+					</div>
+					<span class="progress-text">0/3</span>
+				</div>
+			</div>
+
+			<p class="controls-hint">
+				Keyboard: Space = play/pause focused view, Arrow keys = step frames
+			</p>
+		</article>
+	</body>
+</html>

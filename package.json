@@ -1,8 +1,19 @@
 {
+  "name": "mesh-timeseries-viewer",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
   "dependencies": {
+    "brotli-wasm": "^3.0.1",
+    "pako": "^2.1.0",
     "three": "^0.164.1"
   },
   "devDependencies": {
-    "vite": "^5.2.11"
+    "gltfpack": "^1.0.0",
+    "vite": "^7.3.1"
   }
 }
