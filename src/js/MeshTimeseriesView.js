@@ -69,6 +69,9 @@ export default class MeshTimeseriesView {
 		this.playSpeed = this.defaultPlaySpeed;
 		this.loadedCount = 0;
 		this.isDisposed = false;
+		// Incremented by setDataset() so loads still in flight for a previous dataset
+		// can recognise they are stale and discard their results.
+		this.loadGeneration = 0;
 
 		// Three.js objects
 		this.scene = null;
@@ -91,7 +94,10 @@ export default class MeshTimeseriesView {
 
 		// Create camera
 		this.camera = new THREE.PerspectiveCamera(45, 1, 0.1, 20000);
-		this.camera.position.set(150, 150, 150);
+		// Start in the 'top' preset (looking down world Z, see setView)
+		this.camera.position.set(0, 0, 260);
+		this.camera.up.set(0, 1, 0);
+		this.camera.lookAt(0, 0, 0);
 
 		// Create lighting
 		this.lights = createLightingSetup(this.scene, this.camera);
@@ -122,18 +128,21 @@ export default class MeshTimeseriesView {
 	 * @private
 	 */
 	async _start() {
+		const generation = this.loadGeneration;
 		try {
 			if (this.meshCount > 0) {
 				// Explicit count: only the numbering origin needs detecting
 				if (this.startIndex === null) {
-					this.startIndex = (await this._detectStartIndex()) ?? 1;
+					const detected = await this._detectStartIndex();
+					if (this._isStale(generation)) return;
+					this.startIndex = detected ?? 1;
 				}
 			} else {
 				const { startIndex, count } = await this._discoverMeshRange();
+				if (this._isStale(generation)) return;
 				this.startIndex = startIndex;
 				this.meshCount = count;
 			}
-			if (this.isDisposed) return;
 
 			console.log(`MeshTimeseriesView: ${this.meshCount} meshes at ${this.basePath} (start index ${this.startIndex})`);
 			this.onCountResolved(this.meshCount, this.startIndex);
@@ -148,6 +157,87 @@ export default class MeshTimeseriesView {
 		} catch (error) {
 			console.error('MeshTimeseriesView: failed to resolve mesh files:', error);
 		}
+	}
+
+	/**
+	 * True once the view is disposed or a newer dataset has replaced the one that
+	 * started the work tagged with `generation`.
+	 * @private
+	 * @param {number} generation
+	 * @returns {boolean}
+	 */
+	_isStale(generation) {
+		return this.isDisposed || generation !== this.loadGeneration;
+	}
+
+	/**
+	 * Swap the mesh sequence shown by this view while keeping the scene, camera,
+	 * controls and lights. The frame resets to 0; camera orientation is preserved.
+	 * @param {Object} options
+	 * @param {string} options.basePath - New file prefix (e.g. 'data/meshes2/mesh')
+	 * @param {number} [options.meshCount] - Explicit count; omit to discover from the server
+	 * @param {number} [options.startIndex] - Explicit numbering origin; omit to detect
+	 * @param {boolean} [options.useVertexColors] - Defaults to the current setting
+	 */
+	setDataset(options = {}) {
+		if (this.isDisposed) return;
+		this.pause();
+		this.loadGeneration++;
+
+		this._disposeMeshes();
+
+		this.basePath = options.basePath ?? this.basePath;
+		const explicitCount = Number(options.meshCount);
+		this.meshCount = Number.isFinite(explicitCount) && explicitCount > 0 ? Math.floor(explicitCount) : 0;
+		this.startIndex = Number.isInteger(options.startIndex) ? options.startIndex : null;
+		if (typeof options.useVertexColors === 'boolean') {
+			this.useVertexColors = options.useVertexColors;
+		}
+		this.currentIndex = 0;
+		this.loadedCount = 0;
+
+		this.onFrameChange(0, false);
+		this._start();
+	}
+
+	/**
+	 * Get the file prefix of the dataset currently shown
+	 * @returns {string}
+	 */
+	getBasePath() {
+		return this.basePath;
+	}
+
+	/**
+	 * Release the GPU resources of one loaded GLTF scene
+	 * @private
+	 * @param {THREE.Object3D} root
+	 */
+	_disposeObject(root) {
+		root.traverse((child) => {
+			if (child.geometry) child.geometry.dispose();
+			if (child.material) {
+				if (Array.isArray(child.material)) {
+					child.material.forEach(m => m.dispose());
+				} else {
+					child.material.dispose();
+				}
+			}
+		});
+	}
+
+	/**
+	 * Remove and dispose every loaded mesh (scene, camera and lights are kept)
+	 * @private
+	 */
+	_disposeMeshes() {
+		for (const mesh of this.meshes) {
+			if (mesh) {
+				this._disposeObject(mesh);
+				if (this.scene) this.scene.remove(mesh);
+			}
+		}
+		this.meshes = [];
 	}
 
 	/**
@@ -293,6 +383,7 @@ export default class MeshTimeseriesView {
 	 * @private
 	 */
 	_loadAllMeshes() {
+		const generation = this.loadGeneration;
 		const urls = this._generateFileUrls();
 		const loader = sharedRenderer.getLoader();
 
@@ -306,14 +397,14 @@ export default class MeshTimeseriesView {
 		const onSettled = () => {
 			settledCount++;
 			activeLoads--;
-			if (settledCount === urls.length) {
+			if (settledCount === urls.length && !this._isStale(generation)) {
 				this.onLoadComplete();
 			}
 			loadNext();
 		};
 
 		const loadNext = () => {
-			if (this.isDisposed) return;
+			if (this._isStale(generation)) return;
 
 			while (activeLoads < this.loadConcurrency && nextIndex < urls.length) {
 				const index = nextIndex++;
@@ -321,18 +412,9 @@ export default class MeshTimeseriesView {
 
 				loader.loadAsync(urls[index])
 					.then((gltf) => {
-						if (this.isDisposed) {
-							// Dispose if view was destroyed during loading
-							gltf.scene.traverse((child) => {
-								if (child.geometry) child.geometry.dispose();
-								if (child.material) {
-									if (Array.isArray(child.material)) {
-										child.material.forEach(m => m.dispose());
-									} else {
-										child.material.dispose();
-									}
-								}
-							});
+						if (this._isStale(generation)) {
+							// The view was disposed or switched dataset while this file was loading
+							this._disposeObject(gltf.scene);
 							return;
 						}
 
@@ -634,22 +716,7 @@ export default class MeshTimeseriesView {
 		}
 
 		// Dispose all meshes
-		for (const mesh of this.meshes) {
-			if (mesh) {
-				mesh.traverse((child) => {
-					if (child.geometry) child.geometry.dispose();
-					if (child.material) {
-						if (Array.isArray(child.material)) {
-							child.material.forEach(m => m.dispose());
-						} else {
-							child.material.dispose();
-						}
-					}
-				});
-				this.scene.remove(mesh);
-			}
-		}
-		this.meshes = [];
+		this._disposeMeshes();
 
 		// Dispose lights
 		if (this.lights) {

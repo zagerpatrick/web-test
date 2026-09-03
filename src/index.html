@@ -32,11 +32,24 @@
 			<p>
 				The first dataset shows cellular dynamics over time. Use the controls below to
 				play through the animation or scrub through individual frames. You can also
-				rotate and zoom the view using your mouse.
+				rotate and zoom the view using your mouse. The arrows in the bar above the viewer
+				flip between related datasets, like the figure supplements on a journal page;
+				the camera angle you set carries over.
 			</p>
 
 			<!-- Inline view with its own controls -->
-			<div class="mesh-view-wrapper">
+			<div class="mesh-view-wrapper"
+				 data-datasets='[
+					{"basePath": "data/meshes/mesh",
+					 "label": "Cell 24"},
+					{"basePath": "data/meshes2/mesh",
+					 "label": "Cell 21"}
+				 ]'>
+				<div class="dataset-nav">
+					<button class="dataset-prev" aria-label="Previous dataset" title="Previous dataset">&lsaquo;</button>
+					<button class="dataset-next" aria-label="Next dataset" title="Next dataset">&rsaquo;</button>
+					<span class="dataset-label"></span>
+				</div>
 				<div class="view-buttons">
 					<button class="view-btn" data-view="iso" title="Isometric">
 						<img src="icons/iso.svg" width="30" height="30" alt="Isometric view">
@@ -60,17 +73,18 @@
 						<img src="icons/right.svg" width="30" height="30" alt="Right view">
 					</button>
 				</div>
-				<div class="mesh-view"
-					 data-view="dataset1"
-					 data-basepath="data/meshes/mesh"></div>
+				<div class="mesh-view" data-basepath="data/meshes/mesh"></div>
 				<div class="view-bottom-cap"></div>
 				<div class="view-controls">
-					<button class="view-play">Play</button>
+					<button class="view-play" aria-label="Play" title="Play">
+						<svg class="icon-play" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M3 2v12l10-6z"/></svg>
+						<svg class="icon-pause" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M3 2h3.5v12H3zM9.5 2H13v12H9.5z"/></svg>
+					</button>
 					<input type="range" class="view-timeline" min="0" max="0" value="0">
 					<span class="view-frame">000</span>
 					<div class="view-speed-control">
 						<label>FPS:</label>
-						<input type="number" class="view-fps" min="1" max="60" step="1" value="5" aria-label="Playback speed in frames per second">
+						<input type="number" class="view-fps" min="1" max="60" step="1" value="8" aria-label="Playback speed in frames per second">
 					</div>
 				</div>
 				<div class="view-progress">
@@ -81,6 +95,7 @@
 					<span class="progress-text">0/&hellip;</span>
 				</div>
 			</div>
+			<!-- Inline view with its own controls -->
 
 			<p>
 				The second view shows the same mesh data with face labels visualized as colors.
@@ -89,7 +104,19 @@
 				different angles.
 			</p>
 
-			<div class="mesh-view-wrapper">
+			<!-- Inline view with its own controls -->
+			<div class="mesh-view-wrapper"
+				 data-datasets='[
+					{"basePath": "data/meshes/mesh",
+					 "label": "Cell 24"},
+					{"basePath": "data/meshes2/mesh",
+					 "label": "Cell 21"}
+				 ]'>
+				<div class="dataset-nav">
+					<button class="dataset-prev" aria-label="Previous dataset" title="Previous dataset">&lsaquo;</button>
+					<button class="dataset-next" aria-label="Next dataset" title="Next dataset">&rsaquo;</button>
+					<span class="dataset-label"></span>
+				</div>
 				<div class="view-buttons">
 					<button class="view-btn" data-view="iso" title="Isometric">
 						<img src="icons/iso.svg" width="30" height="30" alt="Isometric view">
@@ -114,17 +141,19 @@
 					</button>
 				</div>
 				<div class="mesh-view"
-					 data-view="dataset2"
 					 data-basepath="data/meshes/mesh"
 					 data-vertexcolors="true"></div>
 				<div class="view-bottom-cap"></div>
 				<div class="view-controls">
-					<button class="view-play">Play</button>
+					<button class="view-play" aria-label="Play" title="Play">
+						<svg class="icon-play" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M3 2v12l10-6z"/></svg>
+						<svg class="icon-pause" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M3 2h3.5v12H3zM9.5 2H13v12H9.5z"/></svg>
+					</button>
 					<input type="range" class="view-timeline" min="0" max="0" value="0">
 					<span class="view-frame">000</span>
 					<div class="view-speed-control">
 						<label>FPS:</label>
-						<input type="number" class="view-fps" min="1" max="60" step="1" value="5" aria-label="Playback speed in frames per second">
+						<input type="number" class="view-fps" min="1" max="60" step="1" value="8" aria-label="Playback speed in frames per second">
 					</div>
 				</div>
 				<div class="view-progress">
@@ -135,6 +164,7 @@
 					<span class="progress-text">0/&hellip;</span>
 				</div>
 			</div>
+			<!-- Inline view with its own controls -->
 
 			<p>
 				The scissor-based rendering technique uses a single WebGL context shared across
@@ -151,7 +181,18 @@
 			</p>
 
 			<!-- Volume view with its own controls -->
-			<div class="volume-view-wrapper">
+			<div class="volume-view-wrapper"
+				 data-datasets='[
+					{"basePath": "data/volumes/",
+					 "label": "Cell 24"},
+					{"basePath": "data/volumes2/",
+					 "label": "Cell 21"}
+				 ]'>
+				<div class="dataset-nav">
+					<button class="dataset-prev" aria-label="Previous dataset" title="Previous dataset">&lsaquo;</button>
+					<button class="dataset-next" aria-label="Next dataset" title="Next dataset">&rsaquo;</button>
+					<span class="dataset-label"></span>
+				</div>
 				<div class="view-buttons">
 					<button class="view-btn" data-view="iso" title="Isometric">
 						<img src="icons/iso.svg" width="30" height="30" alt="Isometric view">
@@ -175,34 +216,35 @@
 						<img src="icons/right.svg" width="30" height="30" alt="Right view">
 					</button>
 				</div>
-				<div class="volume-view"
-					 data-view="volume1"
-					 data-basepath="data/volumes/"></div>
+				<div class="volume-view" data-basepath="data/volumes/"></div>
 				<div class="view-bottom-cap"></div>
 				<div class="volume-controls">
-					<div class="volume-control-row">
-						<button class="view-play">Play</button>
+					<div class="volume-control-row volume-playback-row">
+						<button class="view-play" aria-label="Play" title="Play">
+							<svg class="icon-play" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M3 2v12l10-6z"/></svg>
+							<svg class="icon-pause" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M3 2h3.5v12H3zM9.5 2H13v12H9.5z"/></svg>
+						</button>
 						<input type="range" class="view-timeline" min="0" max="0" value="0">
 						<span class="view-frame">000</span>
+						<div class="view-speed-control">
+							<label>FPS:</label>
+							<input type="number" class="view-fps" min="1" max="60" step="1" value="8" aria-label="Playback speed in frames per second">
+						</div>
 					</div>
 					<div class="volume-control-row">
 						<label>Contrast:</label>
 						<div class="range-slider volume-contrast">
 							<div class="range-slider-track"></div>
 							<div class="range-slider-fill"></div>
-							<input type="range" class="volume-contrast-min" min="0" max="100" value="10" aria-label="Lower contrast limit">
-							<input type="range" class="volume-contrast-max" min="0" max="100" value="100" aria-label="Upper contrast limit">
+							<input type="range" class="volume-contrast-min" min="0" max="100" value="4" aria-label="Lower contrast limit">
+							<input type="range" class="volume-contrast-max" min="0" max="100" value="45" aria-label="Upper contrast limit">
 						</div>
 						<span class="volume-contrast-value">10&ndash;100%</span>
 					</div>
 					<div class="volume-control-row">
 						<label>Gamma:</label>
-						<input type="range" class="volume-gamma" min="20" max="200" value="100">
-						<span class="volume-gamma-value">1.00</span>
-					</div>
-					<div class="view-speed-control">
-						<label>FPS:</label>
-						<input type="number" class="view-fps" min="1" max="60" step="1" value="5" aria-label="Playback speed in frames per second">
+						<input type="range" class="volume-gamma" min="20" max="200" value="70">
+						<span class="volume-gamma-value">0.7</span>
 					</div>
 				</div>
 				<div class="view-progress volume-progress">
@@ -213,6 +255,7 @@
 					<span class="progress-text">0/&hellip;</span>
 				</div>
 			</div>
+			<!-- Volume view with its own controls -->
 
 			<p class="controls-hint">
 				Keyboard: Space = play/pause focused view, Arrow keys = step frames

@@ -1,3 +1,15 @@
+/* Accent colour used by every control: persimmon orange */
+:root {
+	--accent: #ec5800;
+	--accent-hover: #ff7a2e;
+	--accent-active: #c94a00;
+}
+
+/* Native range sliders (timeline, gamma) follow the accent instead of the browser default */
+input[type="range"] {
+	accent-color: var(--accent);
+}
+
 body {
 	font-size: 16pt;
 	background-color: #222;
@@ -81,23 +93,42 @@ p {
 }
 
 .view-play {
-	background: #4a9eff;
+	background: var(--accent);
 	color: white;
 	border: none;
-	padding: 8px 20px;
-	font-size: 12pt;
+	padding: 0;
+	width: 40px;
+	height: 34px;
 	border-radius: 5px;
 	cursor: pointer;
-	min-width: 80px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	flex-shrink: 0;
 	transition: background 0.2s;
 }
 
+/* Play triangle / pause bars, swapped by the .playing class */
+.view-play svg {
+	display: block;
+	fill: currentColor;
+}
+
+.view-play .icon-pause,
+.view-play.playing .icon-play {
+	display: none;
+}
+
+.view-play.playing .icon-pause {
+	display: block;
+}
+
 .view-play:hover {
-	background: #66b3ff;
+	background: var(--accent-hover);
 }
 
 .view-play:active {
-	background: #3a8eef;
+	background: var(--accent-active);
 }
 
 .view-timeline {
@@ -139,7 +170,7 @@ p {
 
 .view-fps:focus {
 	outline: none;
-	border-color: #4a9eff;
+	border-color: var(--accent);
 }
 
 /* View preset buttons - positioned above canvas with matching background */
@@ -191,6 +222,75 @@ p {
 	background: rgba(0, 0, 0, 0.25);
 }
 
+/* Dataset navigation: header bar above the viewer with prev/next arrows and the
+   dataset label beside them (eLife figure-supplement style) */
+.dataset-nav {
+	display: flex;
+	align-items: center;
+	justify-content: flex-start;
+	gap: 8px;
+	max-width: 600px;
+	width: 100%;
+	box-sizing: border-box;
+	padding: 8px 12px;
+	margin-bottom: 6px;
+	background: #2a2a2a;
+	border: 1px solid #3a3a3a;
+	border-radius: 8px;
+}
+
+.dataset-nav[hidden] {
+	display: none;
+}
+
+.dataset-prev,
+.dataset-next {
+	background: transparent;
+	color: #ddd;
+	border: 1px solid #555;
+	border-radius: 4px;
+	width: 28px;
+	height: 28px;
+	font-size: 16pt;
+	line-height: 1;
+	padding: 0 0 3px 0;
+	cursor: pointer;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	transition: background 0.2s, color 0.2s;
+}
+
+.dataset-prev:hover:not(:disabled),
+.dataset-next:hover:not(:disabled) {
+	background: #3a3a3a;
+	color: #fff;
+}
+
+.dataset-prev:active:not(:disabled),
+.dataset-next:active:not(:disabled) {
+	background: var(--accent);
+	color: #fff;
+}
+
+/* Greyed out at the first / last dataset */
+.dataset-prev:disabled,
+.dataset-next:disabled {
+	color: #555;
+	border-color: #3a3a3a;
+	cursor: default;
+}
+
+.dataset-label {
+	font-size: 12pt;
+	font-weight: bold;
+	color: #ddd;
+	margin-left: 6px;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
 /* Per-view progress bar */
 .view-progress {
 	display: flex;
@@ -224,7 +324,7 @@ p {
 .progress-bar {
 	height: 100%;
 	width: 0%;
-	background: linear-gradient(90deg, #4a9eff, #66b3ff);
+	background: linear-gradient(90deg, var(--accent), var(--accent-hover));
 	border-radius: 3px;
 	transition: width 0.1s ease-out;
 }
@@ -316,6 +416,22 @@ p {
 	min-width: 100px;
 }
 
+/* Playback row: same layout as the mesh viewer's .view-controls
+   (play button, fixed-width timeline, frame counter, FPS box, centred) */
+.volume-playback-row {
+	justify-content: center;
+	gap: 15px;
+}
+
+.volume-playback-row .view-timeline {
+	flex: 0 1 auto;
+	width: 200px;
+}
+
+.volume-playback-row .view-speed-control label {
+	min-width: 0;
+}
+
 .volume-contrast-value,
 .volume-gamma-value {
 	font-size: 11pt;
@@ -353,7 +469,7 @@ p {
 }
 
 .range-slider-fill {
-	background: #4a9eff;
+	background: var(--accent);
 }
 
 .range-slider input[type="range"] {
@@ -407,11 +523,11 @@ p {
 }
 
 .range-slider input[type="range"]:focus::-webkit-slider-thumb {
-	border-color: #4a9eff;
+	border-color: var(--accent);
 }
 
 .range-slider input[type="range"]:focus::-moz-range-thumb {
-	border-color: #4a9eff;
+	border-color: var(--accent);
 }
 
 /* The max handle sits on top by default; swap when the min handle is being dragged */

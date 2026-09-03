@@ -34,19 +34,122 @@ function init() {
 }
 
 /**
+ * Read the list of datasets a viewer can flip between.
+ *
+ * The wrapper's `data-datasets` attribute holds a JSON array of
+ * `{ basePath, label, caption, ... }` objects. Without it the viewer has a single
+ * dataset taken from the view element's own attributes (`data-basepath`, ...).
+ * Every dataset inherits `defaults`, so per-dataset entries only need to list
+ * what differs.
+ * @param {HTMLElement} wrapper
+ * @param {Object} defaults - Values derived from the view element's data attributes
+ * @returns {Object[]} At least one dataset
+ */
+function readDatasets(wrapper, defaults) {
+	const raw = wrapper?.dataset.datasets;
+	if (raw) {
+		try {
+			const list = JSON.parse(raw);
+			if (Array.isArray(list) && list.length > 0) {
+				return list.map((ds) => ({ ...defaults, ...ds }));
+			}
+			console.warn('data-datasets must be a non-empty JSON array; using the view element attributes instead');
+		} catch (error) {
+			console.error('Invalid JSON in data-datasets:', error);
+		}
+	}
+	return [{ ...defaults }];
+}
+
+/**
+ * Wire the prev/next dataset arrows and label in the header bar of one viewer
+ * (eLife figure-supplement style). The arrows disable at either end rather than
+ * wrapping. Hidden when there is only one dataset.
+ * @param {HTMLElement} wrapper
+ * @param {Object[]} datasets
+ * @param {Function} onChange - (dataset, index) called after the arrows move
+ */
+function wireDatasetNav(wrapper, datasets, onChange) {
+	const nav = wrapper.querySelector('.dataset-nav');
+	const prevBtn = wrapper.querySelector('.dataset-prev');
+	const nextBtn = wrapper.querySelector('.dataset-next');
+	const label = wrapper.querySelector('.dataset-label');
+
+	let index = 0;
+
+	const render = () => {
+		const ds = datasets[index];
+		if (label) label.textContent = ds.label || `Dataset ${index + 1}`;
+		if (prevBtn) prevBtn.disabled = index === 0;
+		if (nextBtn) nextBtn.disabled = index === datasets.length - 1;
+	};
+
+	if (datasets.length < 2) {
+		if (nav) nav.hidden = true;
+		render();
+		return;
+	}
+
+	const go = (delta) => {
+		const next = index + delta;
+		if (next < 0 || next >= datasets.length) return;
+		index = next;
+		render();
+		onChange(datasets[index], index);
+	};
+
+	if (prevBtn) prevBtn.addEventListener('click', () => go(-1));
+	if (nextBtn) nextBtn.addEventListener('click', () => go(1));
+	render();
+}
+
+/**
+ * Show the play triangle or the pause bars on a play button
+ * @param {HTMLButtonElement|null} playBtn
+ * @param {boolean} isPlaying
+ */
+function setPlayButton(playBtn, isPlaying) {
+	if (!playBtn) return;
+	playBtn.classList.toggle('playing', isPlaying);
+	const label = isPlaying ? 'Pause' : 'Play';
+	playBtn.setAttribute('aria-label', label);
+	playBtn.title = label;
+}
+
+/**
+ * Put the playback and loading controls back to their pre-load state so the
+ * progress of a newly selected dataset is shown from zero.
+ */
+function resetLoadUi({ playBtn, timeline, frameSpan, progressBar, progressText, progressContainer }) {
+	setPlayButton(playBtn, false);
+	if (timeline) {
+		timeline.max = 0;
+		timeline.value = 0;
+	}
+	if (frameSpan) frameSpan.textContent = '000';
+	if (progressBar) progressBar.style.width = '0%';
+	if (progressText) progressText.textContent = '0/…';
+	if (progressContainer) progressContainer.classList.remove('hidden');
+}
+
+/**
  * Initialize mesh timeseries views
  */
 function initMeshViews() {
 	document.querySelectorAll('.mesh-view').forEach((elem) => {
 		const wrapper = elem.closest('.mesh-view-wrapper');
 
-		// Get configuration from data attributes.
-		// data-meshcount and data-startindex are optional overrides; when omitted the
-		// view discovers the numbering origin and the file count from the server.
-		const basePath = elem.dataset.basepath || 'data/meshes/mesh';
-		const meshCount = elem.dataset.meshcount ? parseInt(elem.dataset.meshcount, 10) : undefined;
-		const startIndex = elem.dataset.startindex ? parseInt(elem.dataset.startindex, 10) : undefined;
-		const useVertexColors = elem.dataset.vertexcolors === 'true';
+		// Defaults come from the view element; the wrapper's data-datasets list
+		// (if any) overrides them per dataset. data-meshcount and data-startindex are
+		// optional: when omitted the view discovers the numbering origin and the file
+		// count from the server.
+		const datasets = readDatasets(wrapper, {
+			basePath: elem.dataset.basepath || 'data/meshes/mesh',
+			meshCount: elem.dataset.meshcount ? parseInt(elem.dataset.meshcount, 10) : undefined,
+			startIndex: elem.dataset.startindex ? parseInt(elem.dataset.startindex, 10) : undefined,
+			vertexColors: elem.dataset.vertexcolors === 'true'
+		});
+		const first = datasets[0];
 
 		// Get control elements
 		const playBtn = wrapper.querySelector('.view-play');
@@ -56,15 +159,16 @@ function initMeshViews() {
 		const progressBar = wrapper.querySelector('.progress-bar');
 		const progressText = wrapper.querySelector('.progress-text');
 		const progressContainer = wrapper.querySelector('.view-progress');
+		const loadUi = { playBtn, timeline, frameSpan, progressBar, progressText, progressContainer };
 
 		// Create the view
 		const view = new MeshTimeseriesView({
 			elem,
-			basePath,
-			meshCount,
-			startIndex,
+			basePath: first.basePath,
+			meshCount: first.meshCount,
+			startIndex: first.startIndex,
 			enableControls: true,
-			useVertexColors,
+			useVertexColors: !!first.vertexColors,
 			onCountResolved: (count) => {
 				// Timeline range and progress total follow the resolved count
 				if (timeline) timeline.max = Math.max(count - 1, 0);
@@ -90,11 +194,22 @@ function initMeshViews() {
 			}
 		});
 
+		// Wire up dataset arrows (no-op with a single dataset)
+		wireDatasetNav(wrapper, datasets, (ds) => {
+			resetLoadUi(loadUi);
+			view.setDataset({
+				basePath: ds.basePath,
+				meshCount: ds.meshCount,
+				startIndex: ds.startIndex,
+				useVertexColors: !!ds.vertexColors
+			});
+		});
+
 		// Wire up play button
 		if (playBtn) {
 			playBtn.addEventListener('click', () => {
 				const isPlaying = view.togglePlay();
-				playBtn.textContent = isPlaying ? 'Pause' : 'Play';
+				setPlayButton(playBtn, isPlaying);
 			});
 		}
 
@@ -103,7 +218,7 @@ function initMeshViews() {
 			timeline.addEventListener('input', () => {
 				view.pause();
 				view.setFrame(parseInt(timeline.value));
-				if (playBtn) playBtn.textContent = 'Play';
+				setPlayButton(playBtn, false);
 			});
 		}
 
@@ -142,8 +257,13 @@ function initVolumeViews() {
 	document.querySelectorAll('.volume-view').forEach((elem) => {
 		const wrapper = elem.closest('.volume-view-wrapper');
 
-		// Get configuration from data attributes
-		const basePath = elem.dataset.basepath || 'data/volumes/';
+		// Defaults come from the view element; the wrapper's data-datasets list
+		// (if any) overrides them per dataset. A dataset may also carry
+		// contrastMin / contrastMax (0-1) and gamma (0.2-2) presets.
+		const datasets = readDatasets(wrapper, {
+			basePath: elem.dataset.basepath || 'data/volumes/'
+		});
+		const first = datasets[0];
 
 		// Get control elements
 		const playBtn = wrapper.querySelector('.view-play');
@@ -153,6 +273,7 @@ function initVolumeViews() {
 		const progressBar = wrapper.querySelector('.progress-bar');
 		const progressText = wrapper.querySelector('.progress-text');
 		const progressContainer = wrapper.querySelector('.view-progress');
+		const loadUi = { playBtn, timeline, frameSpan, progressBar, progressText, progressContainer };
 
 		// Volume-specific controls
 		const contrastSlider = wrapper.querySelector('.volume-contrast');
@@ -163,14 +284,34 @@ function initVolumeViews() {
 		const gammaSlider = wrapper.querySelector('.volume-gamma');
 		const gammaValue = wrapper.querySelector('.volume-gamma-value');
 
+		// A dataset preset moves the sliders before the value is applied
+		const applyDatasetPresets = (ds) => {
+			if (contrastMinSlider && Number.isFinite(ds.contrastMin)) {
+				contrastMinSlider.value = Math.round(ds.contrastMin * 100);
+			}
+			if (contrastMaxSlider && Number.isFinite(ds.contrastMax)) {
+				contrastMaxSlider.value = Math.round(ds.contrastMax * 100);
+			}
+			if (gammaSlider && Number.isFinite(ds.gamma)) {
+				gammaSlider.value = Math.round(ds.gamma * 100);
+			}
+		};
+		applyDatasetPresets(first);
+
+		// Initial display settings come from the controls' starting values in the
+		// HTML so the first render matches what the sliders show.
+		const initialContrastMin = contrastMinSlider ? parseInt(contrastMinSlider.value) / 100 : 0.1;
+		const initialContrastMax = contrastMaxSlider ? parseInt(contrastMaxSlider.value) / 100 : 1.0;
+		const initialGamma = gammaSlider ? parseInt(gammaSlider.value) / 100 : 1.0;
+
 		// Create the volume view
 		const view = new VolumeTimeseriesView({
 			elem,
-			basePath,
+			basePath: first.basePath,
 			enableControls: true,
-			contrastMin: 0.1,
-			contrastMax: 1.0,
-			gamma: 1.0,
+			contrastMin: initialContrastMin,
+			contrastMax: initialContrastMax,
+			gamma: initialGamma,
 			stepCount: 512,
 			onMetadataLoaded: (metadata) => {
 				// Update timeline max based on frame count
@@ -205,7 +346,7 @@ function initVolumeViews() {
 		if (playBtn) {
 			playBtn.addEventListener('click', () => {
 				const isPlaying = view.togglePlay();
-				playBtn.textContent = isPlaying ? 'Pause' : 'Play';
+				setPlayButton(playBtn, isPlaying);
 			});
 		}
 
@@ -214,7 +355,7 @@ function initVolumeViews() {
 			timeline.addEventListener('input', () => {
 				view.pause();
 				view.setFrame(parseInt(timeline.value));
-				if (playBtn) playBtn.textContent = 'Play';
+				setPlayButton(playBtn, false);
 			});
 		}
 
@@ -224,8 +365,9 @@ function initVolumeViews() {
 		}
 
 		// Wire up contrast limits (dual-handle slider, ImageJ / napari style)
+		let applyContrast = null;
 		if (contrastMinSlider && contrastMaxSlider) {
-			const applyContrast = (activeHandle) => {
+			applyContrast = (activeHandle) => {
 				let min = parseInt(contrastMinSlider.value);
 				let max = parseInt(contrastMaxSlider.value);
 				// Keep the handles from crossing: the dragged handle pushes the other
@@ -255,13 +397,25 @@ function initVolumeViews() {
 		}
 
 		// Wire up gamma slider (slider is in hundredths: 20-200 -> 0.20-2.00)
+		let applyGamma = null;
 		if (gammaSlider) {
-			gammaSlider.addEventListener('input', () => {
+			applyGamma = () => {
 				const gamma = parseInt(gammaSlider.value) / 100;
 				view.setGamma(gamma);
 				if (gammaValue) gammaValue.textContent = gamma.toFixed(2);
-			});
+			};
+			gammaSlider.addEventListener('input', applyGamma);
+			applyGamma();
 		}
+
+		// Wire up dataset arrows (no-op with a single dataset)
+		wireDatasetNav(wrapper, datasets, (ds) => {
+			resetLoadUi(loadUi);
+			applyDatasetPresets(ds);
+			if (applyContrast) applyContrast(contrastMaxSlider);
+			if (applyGamma) applyGamma();
+			view.setDataset({ basePath: ds.basePath });
+		});
 
 		// Wire up view preset buttons
 		wrapper.querySelectorAll('.view-btn').forEach(btn => {
@@ -331,21 +485,15 @@ function setupKeyboardControls() {
 		if (e.code === 'Space') {
 			e.preventDefault();
 			const isPlaying = view.togglePlay();
-			if (playBtn) {
-				playBtn.textContent = isPlaying ? 'Pause' : 'Play';
-			}
+			setPlayButton(playBtn, isPlaying);
 		} else if (e.code === 'ArrowRight') {
 			e.preventDefault();
 			view.stepForward();
-			if (playBtn) {
-				playBtn.textContent = 'Play';
-			}
+			setPlayButton(playBtn, false);
 		} else if (e.code === 'ArrowLeft') {
 			e.preventDefault();
 			view.stepBackward();
-			if (playBtn) {
-				playBtn.textContent = 'Play';
-			}
+			setPlayButton(playBtn, false);
 		}
 	});
 }

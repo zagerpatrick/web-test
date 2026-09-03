@@ -191,6 +191,7 @@ export default class VolumeLoader {
 		this.onDecodeError = () => {};  // (index, error)
 
 		this.isDisposed = false;
+		this.abortController = null; // cancels in-flight fetches on dispose()
 		pool.addClient(this);
 	}
 
@@ -233,6 +234,8 @@ export default class VolumeLoader {
 		this.frameCount = urls.length;
 		this.compressed = new Array(urls.length);
 		this.unfetched = new Set(urls.map((_, i) => i));
+		this.abortController = new AbortController();
+		const { signal } = this.abortController;
 
 		let active = 0;
 		let settled = 0;
@@ -246,7 +249,7 @@ export default class VolumeLoader {
 				this.unfetched.delete(index);
 				active++;
 
-				fetch(urls[index])
+				fetch(urls[index], { signal })
 					.then((response) => {
 						if (!response.ok) {
 							throw new Error(`${response.status} ${response.statusText}`);
@@ -261,6 +264,8 @@ export default class VolumeLoader {
 						pool.kick();
 					})
 					.catch((error) => {
+						// Aborted fetches are the expected outcome of dispose(), not failures
+						if (error?.name === 'AbortError' || this.isDisposed) return;
 						console.error(`VolumeLoader: failed to fetch ${urls[index]}:`, error);
 						this.pending.delete(index);
 					})
@@ -363,6 +368,10 @@ export default class VolumeLoader {
 
 	dispose() {
 		this.isDisposed = true;
+		if (this.abortController) {
+			this.abortController.abort();
+			this.abortController = null;
+		}
 		pool.removeClient(this);
 		this.compressed = [];
 		this.unfetched.clear();

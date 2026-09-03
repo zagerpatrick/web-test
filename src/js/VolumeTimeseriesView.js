@@ -68,6 +68,8 @@ export default class VolumeTimeseriesView {
 		this.loadedCount = 0;
 		this.isDisposed = false;
 		this.initialLoadComplete = false;
+		// Incremented by setDataset() so async work for a previous dataset can bail out
+		this.loadGeneration = 0;
 
 		// Three.js objects
 		this.scene = null;
@@ -97,7 +99,10 @@ export default class VolumeTimeseriesView {
 
 		// Create camera
 		this.camera = new THREE.PerspectiveCamera(45, 1, 0.1, 20000);
-		this.camera.position.set(1, 1, 1);
+		// Start in the 'top' preset (looking down world Z, see setView)
+		this.camera.position.set(0, 0, 1.75);
+		this.camera.up.set(0, 1, 0);
+		this.camera.lookAt(0, 0, 0);
 
 		// Create controls
 		if (this.enableControls) {
@@ -113,11 +118,7 @@ export default class VolumeTimeseriesView {
 		this.orientationMarker = new OrientationMarker({ labelColor: 0xcccccc });
 
 		// Create volume loader and material factory
-		this.volumeLoader = new VolumeLoader({
-			fetchConcurrency: this.loadConcurrency,
-			maxDecodedFrames: this.maxDecodedFrames
-		});
-		this.volumeLoader.onDecoded = (index, data) => this._onFrameDecoded(index, data);
+		this.volumeLoader = this._createLoader();
 		this.materialFactory = new VolumeMaterialFactory();
 
 		// Register with shared renderer
@@ -131,11 +132,14 @@ export default class VolumeTimeseriesView {
 	 * Load metadata and initialize volume loading
 	 * @private
 	 */
-	async _loadMetadataAndStart() {
+	async _loadMetadataAndStart({ resetCamera = true } = {}) {
+		const generation = this.loadGeneration;
 		try {
 			// Load metadata
 			const metadataUrl = this.basePath + 'metadata.json';
-			this.metadata = await this.volumeLoader.loadMetadata(metadataUrl);
+			const metadata = await this.volumeLoader.loadMetadata(metadataUrl);
+			if (this._isStale(generation)) return;
+			this.metadata = metadata;
 
 			// The explicit file list is authoritative for the frame count; a hand-edited
 			// frameCount that disagrees with it is corrected (with a warning).
@@ -156,13 +160,105 @@ export default class VolumeTimeseriesView {
 			this.onMetadataLoaded(this.metadata);
 
 			// Create volume box geometry based on dimensions
-			this._createVolumeBox();
+			this._createVolumeBox({ resetCamera });
 
 			// Fetch every frame's compressed bytes, decode outward from frame 0
 			this._startLoading();
 
 		} catch (error) {
 			console.error('Failed to load volume metadata:', error);
+		}
+	}
+
+	/**
+	 * True once the view is disposed or a newer dataset has replaced the one that
+	 * started the work tagged with `generation`.
+	 * @private
+	 * @param {number} generation
+	 * @returns {boolean}
+	 */
+	_isStale(generation) {
+		return this.isDisposed || generation !== this.loadGeneration;
+	}
+
+	/**
+	 * Create a loader wired to this view's decode callback
+	 * @private
+	 * @returns {VolumeLoader}
+	 */
+	_createLoader() {
+		const loader = new VolumeLoader({
+			fetchConcurrency: this.loadConcurrency,
+			maxDecodedFrames: this.maxDecodedFrames
+		});
+		loader.onDecoded = (index, data) => {
+			// Ignore frames from a loader that has since been replaced
+			if (loader === this.volumeLoader) this._onFrameDecoded(index, data);
+		};
+		return loader;
+	}
+
+	/**
+	 * Swap the volume sequence shown by this view while keeping the scene, camera
+	 * and controls. Everything tied to the old dataset (fetches, decoded frames, the
+	 * 3D texture and its material, the bounding box) is released and rebuilt, because
+	 * the new dataset may have different dimensions or value range.
+	 * The frame resets to 0; camera orientation is preserved.
+	 * @param {Object} options
+	 * @param {string} options.basePath - New directory containing metadata.json (with trailing slash)
+	 * @returns {Promise<void>} Resolves once metadata is loaded and fetching has started
+	 */
+	async setDataset(options = {}) {
+		if (this.isDisposed) return;
+		this.pause();
+		this.loadGeneration++;
+
+		// Create the replacement loader before disposing the old one so the shared
+		// decode worker pool keeps at least one client and is not torn down and respawned.
+		const oldLoader = this.volumeLoader;
+		this.volumeLoader = this._createLoader();
+		if (oldLoader) oldLoader.dispose();
+
+		this._disposeVolumeResources();
+
+		this.basePath = options.basePath ?? this.basePath;
+		this.metadata = null;
+		this.frameCount = 0;
+		this.volumeUrls = [];
+		this.currentIndex = 0;
+		this.appliedIndex = -1;
+		this.loadedCount = 0;
+		this.initialLoadComplete = false;
+
+		this.onFrameChange(0, false);
+		await this._loadMetadataAndStart({ resetCamera: false });
+	}
+
+	/**
+	 * Get the directory of the dataset currently shown
+	 * @returns {string}
+	 */
+	getBasePath() {
+		return this.basePath;
+	}
+
+	/**
+	 * Dispose the box, material and 3D texture (scene and camera are kept)
+	 * @private
+	 */
+	_disposeVolumeResources() {
+		if (this.volumeBox) {
+			if (this.volumeBox.geometry) this.volumeBox.geometry.dispose();
+			if (this.scene) this.scene.remove(this.volumeBox);
+			this.volumeBox = null;
+		}
+		if (this.volumeMaterial) {
+			this.volumeMaterial.dispose();
+			this.volumeMaterial = null;
+		}
+		if (this.volumeTexture) {
+			this.volumeTexture.dispose();
+			this.volumeTexture = null;
 		}
 	}
 
@@ -194,7 +290,7 @@ export default class VolumeTimeseriesView {
 	 * Create the volume box geometry
 	 * @private
 	 */
-	_createVolumeBox() {
+	_createVolumeBox({ resetCamera = true } = {}) {
 		if (!this.metadata) return;
 
 		const [width, height, depth] = this.metadata.dimensions;
@@ -237,9 +333,14 @@ export default class VolumeTimeseriesView {
 
 		this.scene.add(this.volumeBox);
 
-		// Adjust camera based on volume size
-		const distance = Math.max(normalizedSize.x, normalizedSize.y, normalizedSize.z) * .72;
-		this.camera.position.set(distance, distance, distance);
+		// On a dataset switch the user's camera orientation and zoom are kept
+		if (!resetCamera) return;
+
+		// Adjust camera based on volume size, starting in the 'top' preset
+		// (same distance as the old diagonal placement so zoom level is unchanged)
+		const distance = Math.max(normalizedSize.x, normalizedSize.y, normalizedSize.z) * .72 * Math.sqrt(3);
+		this.camera.position.set(0, 0, distance);
+		this.camera.up.set(0, 1, 0);
 		this.camera.lookAt(0, 0, 0);
 
 		if (this.controls) {
@@ -257,14 +358,17 @@ export default class VolumeTimeseriesView {
 			return;
 		}
 
+		const generation = this.loadGeneration;
 		this.volumeLoader.fetchAll(
 			this.volumeUrls,
 			this.metadata,
 			(fetched, total) => {
+				if (this._isStale(generation)) return;
 				this.loadedCount = fetched;
 				this.onLoadProgress(fetched, total);
 			},
 			() => {
+				if (this._isStale(generation)) return;
 				this.initialLoadComplete = true;
 				this.onLoadComplete();
 			}
@@ -435,7 +539,7 @@ export default class VolumeTimeseriesView {
 	 * @private
 	 */
 	_playLoop() {
-		if (!this.isPlaying || this.isDisposed) return;
+		if (!this.isPlaying || this.isDisposed || this.frameCount === 0) return;
 
 		const nextIndex = (this.currentIndex + 1) % this.frameCount;
 		this.setFrame(nextIndex);
@@ -448,6 +552,7 @@ export default class VolumeTimeseriesView {
 	 */
 	stepForward() {
 		this.pause();
+		if (this.frameCount === 0) return;
 		const nextIndex = Math.min(this.currentIndex + 1, this.frameCount - 1);
 		this.setFrame(nextIndex);
 	}
@@ -662,26 +767,8 @@ export default class VolumeTimeseriesView {
 			this.orientationMarker = null;
 		}
 
-		// Dispose volume box
-		if (this.volumeBox) {
-			if (this.volumeBox.geometry) {
-				this.volumeBox.geometry.dispose();
-			}
-			this.scene.remove(this.volumeBox);
-			this.volumeBox = null;
-		}
-
-		// Dispose material
-		if (this.volumeMaterial) {
-			this.volumeMaterial.dispose();
-			this.volumeMaterial = null;
-		}
-
-		// Dispose the persistent volume texture
-		if (this.volumeTexture) {
-			this.volumeTexture.dispose();
-			this.volumeTexture = null;
-		}
+		// Dispose volume box, material and the persistent volume texture
+		this._disposeVolumeResources();
 
 		// Dispose volume loader (terminates its share of the decode workers)
 		if (this.volumeLoader) {

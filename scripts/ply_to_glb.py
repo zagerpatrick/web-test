@@ -43,19 +43,20 @@ def center_vertices(vertices: np.ndarray) -> np.ndarray:
     return vertices - center
 
 
-def rotate_vertices_x90(vertices: np.ndarray) -> np.ndarray:
+def reorder_vertices_zyx_to_xyz(vertices: np.ndarray) -> np.ndarray:
     """
-    Rotate vertices 90 degrees around the X-axis.
+    Reorder vertex coordinates from array-index order to world order.
 
-    Transforms from Z-up coordinate system to Y-up (Three.js convention).
-    (x, y, z) -> (x, -z, y)
+    Meshes extracted from the (z, y, x) volume arrays (e.g. marching cubes)
+    store vertices as (z, y, x). The viewer uses the same frame as the volume
+    view: world X = x, world Y = y, world Z = z (Z-up), so swap the first and
+    last coordinates: (z, y, x) -> (x, y, z).
+
+    Note: swapping two axes is a reflection, so face winding must be flipped
+    alongside this to keep normals pointing outward (see
+    expand_mesh_for_flat_shading).
     """
-    rotation_matrix = np.array([
-        [1,  0,  0],
-        [0,  0, -1],
-        [0,  1,  0]
-    ], dtype=np.float32)
-    return vertices @ rotation_matrix.T
+    return vertices[:, [2, 1, 0]]
 
 
 def expand_mesh_for_flat_shading(
@@ -78,8 +79,11 @@ def expand_mesh_for_flat_shading(
     # Center vertices at origin
     vertices = center_vertices(vertices)
 
-    # Rotate to match Three.js coordinate system (Y-up)
-    vertices = rotate_vertices_x90(vertices)
+    # Map (z, y, x) array order onto world (x, y, z) to match the volume view
+    vertices = reorder_vertices_zyx_to_xyz(vertices)
+
+    # The axis swap above is a reflection; reverse winding so normals stay outward
+    faces = faces[:, [0, 2, 1]]
 
     # Expand vertices - each face gets its own copy of vertices
     expanded_vertices = vertices[faces.flatten()].astype(np.float32)
