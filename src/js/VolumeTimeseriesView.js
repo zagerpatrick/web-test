@@ -11,7 +11,7 @@ import OrientationMarker from './OrientationMarker.js';
  * Each view has its own:
  * - Scene with volume rendering box
  * - Camera with TrackballControls
- * - Volume textures array with ring buffer memory management
+ * - One persistent R8 3D texture, updated in place from a decoded-frame cache
  * - Independent playback state
  * - Volume-specific controls (render mode, threshold, colormap, etc.)
  */
@@ -22,9 +22,9 @@ export default class VolumeTimeseriesView {
 	 * @param {HTMLElement} options.elem - DOM element to render into
 	 * @param {string} options.basePath - Base path for volume files (e.g., 'public/volumes/')
 	 * @param {number} options.frameCount - Number of volumes in the timeseries (default: from metadata)
-	 * @param {number} options.loadConcurrency - Concurrent loads (default: 4)
-	 * @param {number} options.maxLoadedVolumes - Max volumes in memory (default: 20)
-	 * @param {number} options.prefetchCount - Frames to prefetch during playback (default: 5)
+	 * @param {number} options.loadConcurrency - Concurrent fetches of compressed frames (default: 12)
+	 * @param {number} options.maxDecodedFrames - Decoded frames kept in memory, ~10 MB each (default: 16)
+	 * @param {number} options.prefetchRadius - Frames decoded ahead/behind the current one (default: 6)
 	 * @param {number} options.defaultPlaySpeed - Default playback speed in ms (default: 250)
 	 * @param {boolean} options.enableControls - Enable TrackballControls (default: true)
 	 * @param {string} options.colormap - Initial colormap (default: 'grayscale')
@@ -40,9 +40,9 @@ export default class VolumeTimeseriesView {
 	constructor(options) {
 		this.elem = options.elem;
 		this.basePath = options.basePath || 'data/volumes/';
-		this.loadConcurrency = options.loadConcurrency || 4;
-		this.maxLoadedVolumes = options.maxLoadedVolumes || 20;
-		this.prefetchCount = options.prefetchCount || 5;
+		this.loadConcurrency = options.loadConcurrency || 12;
+		this.maxDecodedFrames = options.maxDecodedFrames || 16;
+		this.prefetchRadius = options.prefetchRadius || 6;
 		this.defaultPlaySpeed = options.defaultPlaySpeed || 250;
 		this.enableControls = options.enableControls !== false;
 
@@ -77,6 +77,8 @@ export default class VolumeTimeseriesView {
 		this.controls = null;
 		this.volumeBox = null;
 		this.volumeMaterial = null;
+		this.volumeTexture = null;
+		this.appliedIndex = -1;
 		this.orientationMarker = null;
 
 		// Volume infrastructure
@@ -114,9 +116,10 @@ export default class VolumeTimeseriesView {
 
 		// Create volume loader and material factory
 		this.volumeLoader = new VolumeLoader({
-			concurrency: this.loadConcurrency,
-			maxLoadedVolumes: this.maxLoadedVolumes
+			fetchConcurrency: this.loadConcurrency,
+			maxDecodedFrames: this.maxDecodedFrames
 		});
+		this.volumeLoader.onDecoded = (index, data) => this._onFrameDecoded(index, data);
 		this.materialFactory = new VolumeMaterialFactory();
 
 		// Register with shared renderer
@@ -157,8 +160,8 @@ export default class VolumeTimeseriesView {
 			// Create volume box geometry based on dimensions
 			this._createVolumeBox();
 
-			// Start loading first frame immediately, then background load
-			await this._loadFirstFrame();
+			// Fetch every frame's compressed bytes, decode outward from frame 0
+			this._startLoading();
 
 		} catch (error) {
 			console.error('Failed to load volume metadata:', error);
@@ -247,138 +250,103 @@ export default class VolumeTimeseriesView {
 	}
 
 	/**
-	 * Load the first frame and set up material
+	 * Start fetching all compressed frames and decoding around the current one
 	 * @private
 	 */
-	async _loadFirstFrame() {
+	_startLoading() {
 		if (this.volumeUrls.length === 0) {
 			console.warn('VolumeTimeseriesView: No volume URLs to load');
 			return;
 		}
 
-		try {
-			this.onLoadProgress(0, this.frameCount);
+		this.volumeLoader.fetchAll(
+			this.volumeUrls,
+			this.metadata,
+			(fetched, total) => {
+				this.loadedCount = fetched;
+				this.onLoadProgress(fetched, total);
+			},
+			() => {
+				this.initialLoadComplete = true;
+				this.onLoadComplete();
+			}
+		);
 
-			console.log('VolumeTimeseriesView: Loading first volume from', this.volumeUrls[0]);
+		this.setFrame(this.currentIndex);
+	}
 
-			// Load first volume
-			const firstTexture = await this.volumeLoader.loadVolume(
-				this.volumeUrls[0],
-				this.metadata
-			);
+	/**
+	 * Point the decode queue at a frame and request its neighbourhood
+	 * @private
+	 */
+	_requestFrame(index) {
+		this.volumeLoader.setTarget(index, {
+			forwardBias: this.isPlaying,
+			pruneRadius: this.prefetchRadius * 2
+		});
+		this.volumeLoader.requestDecode(index);
+		for (let r = 1; r <= this.prefetchRadius; r++) {
+			this.volumeLoader.requestDecode(index + r);
+			this.volumeLoader.requestDecode(index - r);
+		}
+	}
 
-			console.log('VolumeTimeseriesView: Volume texture created', {
-				width: firstTexture.image.width,
-				height: firstTexture.image.height,
-				depth: firstTexture.image.depth
-			});
+	/**
+	 * A worker finished decoding a frame; show it if it is still the one wanted
+	 * @private
+	 */
+	_onFrameDecoded(index, data) {
+		if (this.isDisposed) return;
+		if (index === this.currentIndex) {
+			this._applyFrame(index, data);
+		}
+	}
 
-			if (this.isDisposed) return;
-
-			// Create proper volume material
-			this.volumeMaterial = this.materialFactory.createMaterial(firstTexture, {
+	/**
+	 * Upload decoded voxels into the persistent texture (created on first use)
+	 * @private
+	 */
+	_applyFrame(index, data) {
+		if (!this.volumeTexture) {
+			this.volumeTexture = this.volumeLoader.createTexture(data);
+			this.volumeMaterial = this.materialFactory.createMaterial(this.volumeTexture, {
 				colormap: this.colormap,
 				threshold: this.threshold,
 				opacity: this.opacity,
 				stepCount: this.stepCount,
 				renderMode: this.renderMode
 			});
-
-			console.log('VolumeTimeseriesView: Volume material created');
-
-			// Replace placeholder material
 			this.volumeBox.material = this.volumeMaterial;
-
-			this.loadedCount = 1;
-			this.onLoadProgress(1, this.frameCount);
-			this.onFrameChange(0, true);
-
-			// Start background loading of remaining frames
-			this._loadRemainingFrames();
-
-		} catch (error) {
-			console.error('VolumeTimeseriesView: Failed to load first volume:', error);
+		} else if (this.volumeTexture.image.data !== data) {
+			// Same size and format as the original allocation, so three.js re-uploads
+			// with texSubImage3D into the existing storage instead of reallocating.
+			this.volumeTexture.image.data = data;
+			this.volumeTexture.needsUpdate = true;
 		}
+
+		this.materialFactory.updateMaterial(this.volumeMaterial, { updateJitter: true });
+		this.appliedIndex = index;
+		this.onFrameChange(index, true);
 	}
 
 	/**
-	 * Load remaining frames in background
-	 * @private
-	 */
-	async _loadRemainingFrames() {
-		if (this.volumeUrls.length <= 1) {
-			this.initialLoadComplete = true;
-			this.onLoadComplete();
-			return;
-		}
-
-		// Load remaining volumes with concurrency
-		const remainingUrls = this.volumeUrls.slice(1);
-
-		for (let i = 0; i < remainingUrls.length; i++) {
-			if (this.isDisposed) return;
-
-			try {
-				await this.volumeLoader.loadVolume(remainingUrls[i], this.metadata);
-				this.loadedCount++;
-				this.onLoadProgress(this.loadedCount, this.frameCount);
-			} catch (error) {
-				console.error(`Failed to load volume ${i + 2}:`, error);
-			}
-		}
-
-		this.initialLoadComplete = true;
-		this.onLoadComplete();
-	}
-
-	/**
-	 * Set the visible frame
+	 * Set the visible frame. Synchronous and cheap: if the frame is decoded it is shown
+	 * immediately, otherwise it becomes the decode target and appears when ready.
 	 * @param {number} index - Frame index to show
 	 */
-	async setFrame(index) {
+	setFrame(index) {
 		if (index < 0 || index >= this.frameCount) return;
-		if (index === this.currentIndex && this.volumeLoader.isCached(this.volumeUrls[index])) return;
+		if (index === this.currentIndex && index === this.appliedIndex) return;
 
 		this.currentIndex = index;
+		this.volumeLoader.pin(index);
+		this._requestFrame(index);
 
-		const url = this.volumeUrls[index];
-		const cachedTexture = this.volumeLoader.getCached(url);
-
-		if (cachedTexture) {
-			// Update material with cached texture
-			this._updateVolumeTexture(cachedTexture);
-			this.onFrameChange(index, true);
+		const data = this.volumeLoader.getDecoded(index);
+		if (data) {
+			this._applyFrame(index, data);
 		} else {
-			// Need to load - show loading state
 			this.onFrameChange(index, false);
-
-			try {
-				const texture = await this.volumeLoader.loadVolume(url, this.metadata);
-				if (!this.isDisposed && this.currentIndex === index) {
-					this._updateVolumeTexture(texture);
-					this.onFrameChange(index, true);
-				}
-			} catch (error) {
-				console.error(`Failed to load frame ${index}:`, error);
-			}
-		}
-
-		// Prefetch upcoming frames during playback
-		if (this.isPlaying) {
-			this.volumeLoader.prefetch(this.volumeUrls, this.metadata, index, this.prefetchCount);
-		}
-	}
-
-	/**
-	 * Update volume texture in material
-	 * @private
-	 */
-	_updateVolumeTexture(texture) {
-		if (this.volumeMaterial && this.volumeMaterial.uniforms) {
-			this.materialFactory.updateMaterial(this.volumeMaterial, {
-				volumeTexture: texture,
-				updateJitter: true
-			});
 		}
 	}
 
@@ -396,7 +364,7 @@ export default class VolumeTimeseriesView {
 	 * @returns {boolean}
 	 */
 	isFrameLoaded(index) {
-		return this.volumeLoader.isCached(this.volumeUrls[index]);
+		return this.volumeLoader.hasDecoded(index);
 	}
 
 	/**
@@ -718,7 +686,13 @@ export default class VolumeTimeseriesView {
 			this.volumeMaterial = null;
 		}
 
-		// Dispose volume loader (clears texture cache)
+		// Dispose the persistent volume texture
+		if (this.volumeTexture) {
+			this.volumeTexture.dispose();
+			this.volumeTexture = null;
+		}
+
+		// Dispose volume loader (terminates its share of the decode workers)
 		if (this.volumeLoader) {
 			this.volumeLoader.dispose();
 			this.volumeLoader = null;

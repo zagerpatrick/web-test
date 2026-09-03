@@ -9,6 +9,9 @@ export default defineConfig({
             'Cache-Control': 'no-store'
         }
     },
+    worker: {
+        format: 'es'
+    },
     build: {
         outDir: '../dist',
         emptyOutDir: true,

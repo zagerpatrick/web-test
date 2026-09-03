@@ -5,8 +5,8 @@
     192,
     242
   ],
-  "dataType": "uint4",
-  "bitDepth": 4,
+  "dataType": "uint8",
+  "bitDepth": 8,
   "spacing": [
     1.0,
     1.0,
@@ -14,7 +14,7 @@
   ],
   "valueRange": [
     0,
-    15
+    255
   ],
   "files": [
     "0000.bin.br",
@@ -86,8 +86,9 @@
   "compression": "brotli",
   "processing": {
     "intensityMin": 200,
-    "intensityMax": 4000,
+    "intensityMax": 5000,
     "originalDtype": "int16",
-    "converted": "4-bit"
+    "converted": "8-bit",
+    "totalTimepointsInSource": 120
   }
 }

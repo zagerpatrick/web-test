@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """
-Convert Zarr file to 4-bit Brotli-compressed binary format for web volume rendering.
+Convert Zarr file to 8-bit Brotli-compressed binary format for web volume rendering.
 
-Clips intensity values to [min, max] and maps to full 4-bit range [0, 15].
+Clips intensity values to [min, max] and maps to full 8-bit range [0, 255].
 
 Usage:
     python convert-zarr-to-bin.py -i images/561_registered.zarr -o public/volumes/ --min 200 --max 4000
+
+    # Only convert the first 65 timepoints:
+    python convert-zarr-to-bin.py -i images/561_registered.zarr -o public/volumes/ --min 200 --max 4000 --num-volumes 65
 
 Requirements:
     pip install zarr numpy brotli
@@ -26,15 +29,16 @@ except ImportError as e:
     sys.exit(1)
 
 
-def convert_zarr_to_bin(zarr_path, output_dir, intensity_min, intensity_max):
+def convert_zarr_to_bin(zarr_path, output_dir, intensity_min, intensity_max, num_volumes=None):
     """
-    Convert a Zarr file to 4-bit Brotli-compressed binary format.
+    Convert a Zarr file to 8-bit Brotli-compressed binary format.
 
     Args:
         zarr_path: Path to input Zarr file
         output_dir: Path for output directory
         intensity_min: Minimum intensity value
         intensity_max: Maximum intensity value
+        num_volumes: Number of timepoints to convert (from the start). None = all.
 
     Returns:
         dict with volume metadata
@@ -54,12 +58,17 @@ def convert_zarr_to_bin(zarr_path, output_dir, intensity_min, intensity_max):
         print(f"  Dimension names: {dim_names}")
 
     # Shape is (t, z, y, x)
-    n_timepoints = z.shape[0]
+    total_timepoints = z.shape[0]
     depth = z.shape[1]
     height = z.shape[2]
     width = z.shape[3]
 
-    print(f"  Timepoints: {n_timepoints}")
+    if num_volumes is None or num_volumes >= total_timepoints:
+        n_timepoints = total_timepoints
+    else:
+        n_timepoints = num_volumes
+
+    print(f"  Timepoints: {n_timepoints} of {total_timepoints}")
     print(f"  Volume dimensions: {width} x {height} x {depth}")
     print(f"  Intensity range: [{intensity_min}, {intensity_max}]")
 
@@ -80,26 +89,20 @@ def convert_zarr_to_bin(zarr_path, output_dir, intensity_min, intensity_max):
         orig_max = int(volume.max())
         print(f"  Original range: {orig_min} to {orig_max}")
 
-        # Clip to [min, max] and map to 4-bit range [0, 15]
+        # Clip to [min, max] and map to 8-bit range [0, 255]
         volume = volume.astype(np.float32)
         clipped = np.clip(volume, intensity_min, intensity_max)
         normalized = (clipped - intensity_min) / (intensity_max - intensity_min)
-        output = np.round(normalized * 15).astype(np.uint8)
+        output = np.round(normalized * 255).astype(np.uint8)
         volume = output
 
-        # Get final stats before packing
+        # Get final stats
         final_min = int(volume.min())
         final_max = int(volume.max())
         print(f"  Final range: {final_min} to {final_max}")
 
-        # Pack to 4-bit (2 voxels per byte)
-        volume_flat = volume.flatten()
-        # Pad to even length if necessary
-        if len(volume_flat) % 2 != 0:
-            volume_flat = np.append(volume_flat, 0)
-        # Pack pairs: high nibble = even index, low nibble = odd index
-        packed = ((volume_flat[0::2].astype(np.uint16) << 4) | volume_flat[1::2]).astype(np.uint8)
-        volume = packed
+        # One voxel per byte (no packing needed for 8-bit)
+        volume = volume.flatten()
 
         # Ensure C-contiguous array
         volume = np.ascontiguousarray(volume)
@@ -129,8 +132,8 @@ def convert_zarr_to_bin(zarr_path, output_dir, intensity_min, intensity_max):
     metadata = {
         'frameCount': n_timepoints,
         'dimensions': [width, height, depth],  # WebGL order
-        'dataType': 'uint4',
-        'bitDepth': 4,
+        'dataType': 'uint8',
+        'bitDepth': 8,
         'spacing': [1.0, 1.0, 1.0],
         'valueRange': [final_min, final_max],
         'files': [m['file'] for m in all_metadata],
@@ -139,7 +142,8 @@ def convert_zarr_to_bin(zarr_path, output_dir, intensity_min, intensity_max):
             'intensityMin': intensity_min,
             'intensityMax': intensity_max,
             'originalDtype': str(z.dtype),
-            'converted': '4-bit'
+            'converted': '8-bit',
+            'totalTimepointsInSource': total_timepoints
         }
     }
 
@@ -153,9 +157,9 @@ def convert_zarr_to_bin(zarr_path, output_dir, intensity_min, intensity_max):
 
     print(f"\n{'=' * 50}")
     print(f"Conversion complete!")
-    print(f"  Frames: {n_timepoints}")
+    print(f"  Frames: {n_timepoints} of {total_timepoints}")
     print(f"  Dimensions: {width} x {height} x {depth}")
-    print(f"  Data type: uint4 (4-bit, 16 levels)")
+    print(f"  Data type: uint8 (8-bit, 256 levels)")
     print(f"  Compression: Brotli (quality=11)")
     print(f"  Value range: {intensity_min} - {intensity_max}")
     print(f"  Intensity mapping: [{intensity_min}, {intensity_max}]")
@@ -169,7 +173,7 @@ def convert_zarr_to_bin(zarr_path, output_dir, intensity_min, intensity_max):
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Convert Zarr to 4-bit Brotli-compressed binary for web volume rendering'
+        description='Convert Zarr to 8-bit Brotli-compressed binary for web volume rendering'
     )
     parser.add_argument(
         '--input', '-i',
@@ -191,7 +195,13 @@ def main():
         '--max',
         type=int,
         required=True,
-        help='Maximum intensity value (clipping bound, maps to 15)'
+        help='Maximum intensity value (clipping bound, maps to 255)'
+    )
+    parser.add_argument(
+        '--num-volumes', '-n',
+        type=int,
+        default=None,
+        help='Number of timepoints to convert, starting from the first (default: all)'
     )
 
     args = parser.parse_args()
@@ -208,7 +218,11 @@ def main():
         print(f"Error: --min ({args.min}) must be less than --max ({args.max})")
         sys.exit(1)
 
-    convert_zarr_to_bin(zarr_path, output_dir, args.min, args.max)
+    if args.num_volumes is not None and args.num_volumes < 1:
+        print(f"Error: --num-volumes ({args.num_volumes}) must be at least 1")
+        sys.exit(1)
+
+    convert_zarr_to_bin(zarr_path, output_dir, args.min, args.max, args.num_volumes)
 
 
 if __name__ == '__main__':

@@ -84,7 +84,11 @@ The `scripts/` directory contains utilities for converting raw data:
 - **Volumes** (`public/data/volumes/`): `metadata.json` plus one `NNNN.bin.br` per
   frame (0-based), both written by `convert-zarr-to-bin.py`. The metadata must be
   valid JSON (watch for trailing commas when editing it by hand); its `files` array is
-  the source of truth for the frame count.
+  the source of truth for the frame count. At runtime every frame's compressed bytes are
+  fetched up front, frames are decoded (Brotli + 4-bit unpack) in a pool of Web Workers,
+  and each view keeps a single 8-bit `R8` 3D texture that is updated in place. The
+  decoded-frame cache size (`maxDecodedFrames`, ~10 MB per frame) and decode-ahead
+  window (`prefetchRadius`) are `VolumeTimeseriesView` options.
 
 ## Features
 
