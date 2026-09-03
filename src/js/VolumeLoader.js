@@ -6,11 +6,13 @@ let brotliModule = null;
 async function getBrotli() {
 	if (!brotliModule) {
 		// Dynamically load brotli-wasm using URL to bypass Vite's import analysis
-		const baseUrl = import.meta.env.BASE_URL || '/';
-		const jsUrl = new URL(`${baseUrl}brotli_wasm.js`, window.location.origin).href;
+		// Resolve against the page URL (not the origin) so a relative Vite base
+		// like './' works when the site is served from a sub-path (GitHub Pages).
+		const baseUrl = import.meta.env.BASE_URL || './';
+		const jsUrl = new URL(`${baseUrl}brotli_wasm.js`, document.baseURI).href;
 		const brotliJs = await import(/* @vite-ignore */ jsUrl);
 		// Initialize with explicit path to WASM file
-		const wasmUrl = new URL(`${baseUrl}brotli_wasm_bg.wasm`, window.location.origin);
+		const wasmUrl = new URL(`${baseUrl}brotli_wasm_bg.wasm`, document.baseURI);
 		await brotliJs.default(wasmUrl);
 		brotliModule = brotliJs;
 	}
