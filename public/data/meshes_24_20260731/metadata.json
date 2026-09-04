@@ -1,0 +1,136 @@
+{
+  "frameCount": 65,
+  "centering": "sequence-bbox",
+  "center": [
+    91.01989459991455,
+    102.30107164382935,
+    106.26279592514038
+  ],
+  "centerArrayOrder": [
+    106.26279592514038,
+    102.30107164382935,
+    91.01989459991455
+  ],
+  "bounds": {
+    "min": [
+      -100.81639385223389,
+      -86.41238355636597,
+      -91.0255036354065
+    ],
+    "max": [
+      100.81639385223389,
+      86.41238355636597,
+      91.0255036354065
+    ]
+  },
+  "sourceBounds": {
+    "min": [
+      -9.796499252319336,
+      15.888688087463379,
+      15.237292289733887
+    ],
+    "max": [
+      191.83628845214844,
+      188.7134552001953,
+      197.28829956054688
+    ]
+  },
+  "axisOrder": "world x, y, z = source array x, y, z (array order was z, y, x)",
+  "aoRays": 32,
+  "aoAlpha": "COLOR_0 alpha = 1 - ambient occlusion",
+  "labelColors": {
+    "0": [
+      0.7333333333333333,
+      0.7333333333333333,
+      0.7333333333333333,
+      1.0
+    ],
+    "1": [
+      0.0,
+      0.4666666666666667,
+      0.7333333333333333,
+      1.0
+    ],
+    "2": [
+      0.8,
+      0.2,
+      0.06666666666666667,
+      1.0
+    ],
+    "3": [
+      0.25882352941176473,
+      0.25882352941176473,
+      0.25882352941176473,
+      1.0
+    ]
+  },
+  "labelSource": "561_labv_corr_list_1.npy",
+  "labelType": "auto",
+  "files": [
+    "mesh0001.glb",
+    "mesh0002.glb",
+    "mesh0003.glb",
+    "mesh0004.glb",
+    "mesh0005.glb",
+    "mesh0006.glb",
+    "mesh0007.glb",
+    "mesh0008.glb",
+    "mesh0009.glb",
+    "mesh0010.glb",
+    "mesh0011.glb",
+    "mesh0012.glb",
+    "mesh0013.glb",
+    "mesh0014.glb",
+    "mesh0015.glb",
+    "mesh0016.glb",
+    "mesh0017.glb",
+    "mesh0018.glb",
+    "mesh0019.glb",
+    "mesh0020.glb",
+    "mesh0021.glb",
+    "mesh0022.glb",
+    "mesh0023.glb",
+    "mesh0024.glb",
+    "mesh0025.glb",
+    "mesh0026.glb",
+    "mesh0027.glb",
+    "mesh0028.glb",
+    "mesh0029.glb",
+    "mesh0030.glb",
+    "mesh0031.glb",
+    "mesh0032.glb",
+    "mesh0033.glb",
+    "mesh0034.glb",
+    "mesh0035.glb",
+    "mesh0036.glb",
+    "mesh0037.glb",
+    "mesh0038.glb",
+    "mesh0039.glb",
+    "mesh0040.glb",
+    "mesh0041.glb",
+    "mesh0042.glb",
+    "mesh0043.glb",
+    "mesh0044.glb",
+    "mesh0045.glb",
+    "mesh0046.glb",
+    "mesh0047.glb",
+    "mesh0048.glb",
+    "mesh0049.glb",
+    "mesh0050.glb",
+    "mesh0051.glb",
+    "mesh0052.glb",
+    "mesh0053.glb",
+    "mesh0054.glb",
+    "mesh0055.glb",
+    "mesh0056.glb",
+    "mesh0057.glb",
+    "mesh0058.glb",
+    "mesh0059.glb",
+    "mesh0060.glb",
+    "mesh0061.glb",
+    "mesh0062.glb",
+    "mesh0063.glb",
+    "mesh0064.glb",
+    "mesh0065.glb"
+  ]
+}

@@ -1,8 +1,10 @@
 import * as THREE from 'three';
 import { TrackballControls } from 'three/addons/controls/TrackballControls.js';
 import sharedRenderer from './SharedRenderer.js';
-import { processMaterials, processVertexColorMaterials, createLightingSetup } from './MaterialFactory.js';
+import { createSurfaceMaterial, applySurfaceMaterial, setUseVertexColors } from './MaterialFactory.js';
 import OrientationMarker from './OrientationMarker.js';
+import Coverslip from './Coverslip.js';
+import { BACKGROUND, COVERSLIP } from './RenderStyle.js';
 
 // Discovery tuning: HEAD probes issued in parallel per round, and the largest
 // index offset probed before giving up (safety cap for runaway sequences).
@@ -17,7 +19,10 @@ const discoveryCache = new Map();
  * MeshTimeseriesView - Encapsulates a single mesh timeseries view
  *
  * Each view has its own:
- * - Scene with lighting
+ * - Scene with a napari-style shaded surface material and a coverslip slab
+ * - A frame group holding every mesh, shifted by one fixed XY offset so the
+ *   first frame is centred on the coverslip and later frames keep their
+ *   registered motion relative to it
  * - Camera with TrackballControls
  * - Meshes array for the timeseries
  * - Independent playback state
@@ -36,6 +41,10 @@ export default class MeshTimeseriesView {
 	 * @param {number} options.defaultPlaySpeed - Default playback speed in ms (default: 250)
 	 * @param {boolean} options.enableControls - Enable OrbitControls (default: true)
 	 * @param {boolean} options.useVertexColors - Use vertex colors from mesh (default: false)
+	 * @param {boolean} options.showCoverslip - Show the coverslip slab under the cell (default: true)
+	 * @param {number} options.coverslipSize - Square footprint of the coverslip in mesh units (default: 200)
+	 * @param {number} options.coverslipThickness - Coverslip thickness in mesh units (default: 12)
+	 * @param {number} options.coverslipOpacity - Opacity of the coverslip body (default: 0.5)
 	 * @param {Function} options.onLoadProgress - Callback for load progress (loaded, total)
 	 * @param {Function} options.onLoadComplete - Callback when all meshes loaded
 	 * @param {Function} options.onFrameChange - Callback when frame changes (index)
@@ -54,6 +63,10 @@ export default class MeshTimeseriesView {
 		this.defaultPlaySpeed = options.defaultPlaySpeed || 250;
 		this.enableControls = options.enableControls !== false;
 		this.useVertexColors = options.useVertexColors || false;
+		this.showCoverslip = options.showCoverslip !== false;
+		this.coverslipSize = options.coverslipSize ?? COVERSLIP.padSize;
+		this.coverslipThickness = options.coverslipThickness ?? COVERSLIP.thickness;
+		this.coverslipOpacity = options.coverslipOpacity ?? COVERSLIP.meshBodyOpacity;
 
 		// Callbacks
 		this.onLoadProgress = options.onLoadProgress || (() => {});
@@ -61,8 +74,9 @@ export default class MeshTimeseriesView {
 		this.onFrameChange = options.onFrameChange || (() => {});
 		this.onCountResolved = options.onCountResolved || (() => {});
 
-		// State (meshes is filled by index once the count is known)
+		// State (meshes and frameBounds are filled by index once the count is known)
 		this.meshes = [];
+		this.frameBounds = [];
 		this.currentIndex = 0;
 		this.isPlaying = false;
 		this.playTimeoutId = null;
@@ -77,7 +91,9 @@ export default class MeshTimeseriesView {
 		this.scene = null;
 		this.camera = null;
 		this.controls = null;
-		this.lights = null;
+		this.surfaceMaterial = null;
+		this.frameRoot = null;
+		this.coverslip = null;
 		this.orientationMarker = null;
 
 		this._init();
@@ -90,7 +106,7 @@ export default class MeshTimeseriesView {
 	_init() {
 		// Create scene
 		this.scene = new THREE.Scene();
-		this.scene.background = new THREE.Color(0xd0d0d0);
+		this.scene.background = new THREE.Color(BACKGROUND.mesh);
 
 		// Create camera
 		this.camera = new THREE.PerspectiveCamera(45, 1, 0.1, 20000);
@@ -99,8 +115,26 @@ export default class MeshTimeseriesView {
 		this.camera.up.set(0, 1, 0);
 		this.camera.lookAt(0, 0, 0);
 
-		// Create lighting
-		this.lights = createLightingSetup(this.scene, this.camera);
+		// One surface material shared by every frame (napari-style shading + baked AO)
+		this.surfaceMaterial = createSurfaceMaterial({ useVertexColors: this.useVertexColors });
+
+		// Coverslip slab, seated under the first frame once its bounds are known
+		this.coverslip = new Coverslip({
+			sizeX: this.coverslipSize,
+			sizeY: this.coverslipSize,
+			thickness: this.coverslipThickness,
+			edgeColor: COVERSLIP.edgeColorLight,
+			bodyOpacity: this.coverslipOpacity
+		});
+		this.coverslip.setVisible(false);
+		this.scene.add(this.coverslip.group);
+
+		// Every frame is parented here. The group is translated once, when the first
+		// frame loads, so that frame is centred over the coverslip in XY; because the
+		// same translation applies to all frames the registration between them is kept.
+		this.frameRoot = new THREE.Group();
+		this.frameRoot.name = 'frames';
+		this.scene.add(this.frameRoot);
 
 		// Create controls (scoped to the view element)
 		if (this.enableControls) {
@@ -193,6 +227,9 @@ export default class MeshTimeseriesView {
 		if (typeof options.useVertexColors === 'boolean') {
 			this.useVertexColors = options.useVertexColors;
 		}
+		setUseVertexColors(this.surfaceMaterial, this.useVertexColors);
+		if (this.coverslip) this.coverslip.setVisible(false);
+		if (this.frameRoot) this.frameRoot.position.set(0, 0, 0);
 		this.currentIndex = 0;
 		this.loadedCount = 0;
 
@@ -209,14 +246,15 @@ export default class MeshTimeseriesView {
 	}
 
 	/**
-	 * Release the GPU resources of one loaded GLTF scene
+	 * Release the GPU resources of one loaded GLTF scene. The shared surface
+	 * material is kept; it is released in dispose().
 	 * @private
 	 * @param {THREE.Object3D} root
 	 */
 	_disposeObject(root) {
 		root.traverse((child) => {
 			if (child.geometry) child.geometry.dispose();
-			if (child.material) {
+			if (child.material && child.material !== this.surfaceMaterial) {
 				if (Array.isArray(child.material)) {
 					child.material.forEach(m => m.dispose());
 				} else {
@@ -234,10 +272,11 @@ export default class MeshTimeseriesView {
 		for (const mesh of this.meshes) {
 			if (mesh) {
 				this._disposeObject(mesh);
-				if (this.scene) this.scene.remove(mesh);
+				if (mesh.parent) mesh.parent.remove(mesh);
 			}
 		}
 		this.meshes = [];
+		this.frameBounds = [];
 	}
 
 	/**
@@ -419,12 +458,13 @@ export default class MeshTimeseriesView {
 						}
 
 						gltf.scene.visible = false;
-						if (this.useVertexColors) {
-							processVertexColorMaterials(gltf.scene);
-						} else {
-							processMaterials(gltf.scene);
-						}
-						this.scene.add(gltf.scene);
+						applySurfaceMaterial(gltf.scene, this.surfaceMaterial);
+						// Bounds in the frame group's space (the GLBs share one origin); the
+						// first frame centres the group in XY and seats the coverslip
+						gltf.scene.updateMatrixWorld(true);
+						this.frameBounds[index] = new THREE.Box3().setFromObject(gltf.scene);
+						if (index === 0) this._centerFirstFrame();
+						this.frameRoot.add(gltf.scene);
 						this.meshes[index] = gltf.scene;
 						this.loadedCount++;
 
@@ -469,6 +509,48 @@ export default class MeshTimeseriesView {
 
 		this.currentIndex = index;
 		this.onFrameChange(index, !!this.meshes[index]);
+	}
+
+	/**
+	 * Translate the whole timeseries so the first frame's bounding-box centre sits
+	 * on the coverslip's centre (the origin) in XY, then seat the coverslip under
+	 * that frame's lowest point. Both are done once and left alone: the camera is
+	 * static, and following each frame's own bounding box would make the cell and
+	 * the slab bob around during playback and destroy the registered motion.
+	 * @private
+	 */
+	_centerFirstFrame() {
+		const bounds = this.frameBounds[0];
+		if (!bounds) return;
+
+		// The group's Z is untouched, so bounds.min.z is also the world-space floor
+		const center = bounds.getCenter(new THREE.Vector3());
+		this.frameRoot.position.set(-center.x, -center.y, 0);
+
+		this._seatCoverslip();
+	}
+
+	/**
+	 * Place the coverslip so its top face touches the lowest point of the first frame
+	 * @private
+	 */
+	_seatCoverslip() {
+		if (!this.coverslip || !this.showCoverslip) return;
+		const bounds = this.frameBounds[0];
+		if (!bounds) return;
+		this.coverslip.setTop(bounds.min.z + this.frameRoot.position.z);
+		this.coverslip.setVisible(true);
+	}
+
+	/**
+	 * Show or hide the coverslip slab
+	 * @param {boolean} visible
+	 */
+	setCoverslipVisible(visible) {
+		this.showCoverslip = visible;
+		if (this.coverslip) {
+			this.coverslip.setVisible(visible && !!this.frameBounds[0]);
+		}
 	}
 
 	/**
@@ -718,13 +800,14 @@ export default class MeshTimeseriesView {
 		// Dispose all meshes
 		this._disposeMeshes();
 
-		// Dispose lights
-		if (this.lights) {
-			Object.values(this.lights).forEach(light => {
-				if (light.parent) light.parent.remove(light);
-				if (light.dispose) light.dispose();
-			});
-			this.lights = null;
+		// Dispose the shared surface material and the coverslip
+		if (this.surfaceMaterial) {
+			this.surfaceMaterial.dispose();
+			this.surfaceMaterial = null;
+		}
+		if (this.coverslip) {
+			this.coverslip.dispose();
+			this.coverslip = null;
 		}
 
 		// Clear scene

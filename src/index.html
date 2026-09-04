@@ -21,202 +21,45 @@
 		<canvas id="c"></canvas>
 
 		<article class="content">
-			<h1>Cell Mesh Analysis</h1>
+			<h1>Neutrophil Membrane Dynamics</h1>
 
 			<p>
-				This interactive visualization demonstrates the rendering of mesh timeseries data
-				using Three.js with the scissor-based rendering pattern. Multiple independent views
-				can be embedded inline with text content, each with its own dataset and playback controls.
+				Cell types across the tree of life maintain excess membrane. Fibroblasts, ameboid dictyostelium, 
+				early stage mammalian embryos, and nearly all immune cell types, organize portions of their plasma 
+				membrane into thin structures rich in membrane and poor in cytoplasm. While these structures have 
+				unique functions within any given cell type/organism, less is understood about how this organization 
+				of membrane also defines shape and mechanical state.
 			</p>
 
 			<p>
-				The first dataset shows cellular dynamics over time. Use the controls below to
-				play through the animation or scrub through individual frames. You can also
-				rotate and zoom the view using your mouse. The arrows in the bar above the viewer
-				flip between related datasets, like the figure supplements on a journal page;
-				the camera angle you set carries over.
+				Despite the breadth of examples of membrane reservoirs across biology, their role in immune cells is 
+				understudied despite interest. Neutrophils, the first responder of the innate immune system, maintain
+				excess membrane in folds and filopodia. The work herein aims to better understand the role of the 
+				neutrophil membrane reservoir in cell shape, cell shape change, and migration.
 			</p>
 
-			<!-- Inline view with its own controls -->
-			<div class="mesh-view-wrapper"
-				 data-datasets='[
-					{"basePath": "data/meshes/mesh",
-					 "label": "Cell 24"},
-					{"basePath": "data/meshes2/mesh",
-					 "label": "Cell 21"}
-				 ]'>
-				<div class="dataset-nav">
-					<button class="dataset-prev" aria-label="Previous dataset" title="Previous dataset">&lsaquo;</button>
-					<button class="dataset-next" aria-label="Next dataset" title="Next dataset">&rsaquo;</button>
-					<span class="dataset-label"></span>
-				</div>
-				<div class="view-buttons">
-					<button class="view-btn" data-view="iso" title="Isometric">
-						<img src="icons/iso.svg" width="30" height="30" alt="Isometric view">
-					</button>
-					<button class="view-btn" data-view="top" title="Top">
-						<img src="icons/top.svg" width="30" height="30" alt="Top view">
-					</button>
-					<button class="view-btn" data-view="bottom" title="Bottom">
-						<img src="icons/bottom.svg" width="30" height="30" alt="Bottom view">
-					</button>
-					<button class="view-btn" data-view="front" title="Front">
-						<img src="icons/front.svg" width="30" height="30" alt="Front view">
-					</button>
-					<button class="view-btn" data-view="back" title="Back">
-						<img src="icons/back.svg" width="30" height="30" alt="Back view">
-					</button>
-					<button class="view-btn" data-view="left" title="Left">
-						<img src="icons/left.svg" width="30" height="30" alt="Left view">
-					</button>
-					<button class="view-btn" data-view="right" title="Right">
-						<img src="icons/right.svg" width="30" height="30" alt="Right view">
-					</button>
-				</div>
-				<div class="mesh-view" data-basepath="data/meshes/mesh"></div>
-				<div class="view-bottom-cap"></div>
-				<div class="view-controls">
-					<button class="view-play" aria-label="Play" title="Play">
-						<svg class="icon-play" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M3 2v12l10-6z"/></svg>
-						<svg class="icon-pause" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M3 2h3.5v12H3zM9.5 2H13v12H9.5z"/></svg>
-					</button>
-					<input type="range" class="view-timeline" min="0" max="0" value="0">
-					<span class="view-frame">000</span>
-					<div class="view-speed-control">
-						<label>FPS:</label>
-						<input type="number" class="view-fps" min="1" max="60" step="1" value="8" aria-label="Playback speed in frames per second">
-					</div>
-				</div>
-				<div class="view-progress">
-					<span class="progress-label">Loading:</span>
-					<div class="progress-bar-wrapper">
-						<div class="progress-bar"></div>
-					</div>
-					<span class="progress-text">0/&hellip;</span>
-				</div>
-			</div>
-			<!-- Inline view with its own controls -->
-
+			<h2>Microscopy</h2>
+			
 			<p>
-				The second view shows the same mesh data with face labels visualized as colors.
-				Blue and orange regions indicate different labeled segments. Each view operates
-				independently - you can play one while the other is paused, or rotate them to
-				different angles.
-			</p>
-
-			<!-- Inline view with its own controls -->
-			<div class="mesh-view-wrapper"
-				 data-datasets='[
-					{"basePath": "data/meshes/mesh",
-					 "label": "Cell 24"},
-					{"basePath": "data/meshes2/mesh",
-					 "label": "Cell 21"}
-				 ]'>
-				<div class="dataset-nav">
-					<button class="dataset-prev" aria-label="Previous dataset" title="Previous dataset">&lsaquo;</button>
-					<button class="dataset-next" aria-label="Next dataset" title="Next dataset">&rsaquo;</button>
-					<span class="dataset-label"></span>
-				</div>
-				<div class="view-buttons">
-					<button class="view-btn" data-view="iso" title="Isometric">
-						<img src="icons/iso.svg" width="30" height="30" alt="Isometric view">
-					</button>
-					<button class="view-btn" data-view="top" title="Top">
-						<img src="icons/top.svg" width="30" height="30" alt="Top view">
-					</button>
-					<button class="view-btn" data-view="bottom" title="Bottom">
-						<img src="icons/bottom.svg" width="30" height="30" alt="Bottom view">
-					</button>
-					<button class="view-btn" data-view="front" title="Front">
-						<img src="icons/front.svg" width="30" height="30" alt="Front view">
-					</button>
-					<button class="view-btn" data-view="back" title="Back">
-						<img src="icons/back.svg" width="30" height="30" alt="Back view">
-					</button>
-					<button class="view-btn" data-view="left" title="Left">
-						<img src="icons/left.svg" width="30" height="30" alt="Left view">
-					</button>
-					<button class="view-btn" data-view="right" title="Right">
-						<img src="icons/right.svg" width="30" height="30" alt="Right view">
-					</button>
-				</div>
-				<div class="mesh-view"
-					 data-basepath="data/meshes/mesh"
-					 data-vertexcolors="true"></div>
-				<div class="view-bottom-cap"></div>
-				<div class="view-controls">
-					<button class="view-play" aria-label="Play" title="Play">
-						<svg class="icon-play" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M3 2v12l10-6z"/></svg>
-						<svg class="icon-pause" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M3 2h3.5v12H3zM9.5 2H13v12H9.5z"/></svg>
-					</button>
-					<input type="range" class="view-timeline" min="0" max="0" value="0">
-					<span class="view-frame">000</span>
-					<div class="view-speed-control">
-						<label>FPS:</label>
-						<input type="number" class="view-fps" min="1" max="60" step="1" value="8" aria-label="Playback speed in frames per second">
-					</div>
-				</div>
-				<div class="view-progress">
-					<span class="progress-label">Loading:</span>
-					<div class="progress-bar-wrapper">
-						<div class="progress-bar"></div>
-					</div>
-					<span class="progress-text">0/&hellip;</span>
-				</div>
-			</div>
-			<!-- Inline view with its own controls -->
-
-			<p>
-				The scissor-based rendering technique uses a single WebGL context shared across
-				all views, which avoids browser limitations on the number of WebGL contexts
-				(typically around 8) while efficiently sharing resources like textures and shaders.
-			</p>
-
-			<h2>Volume Rendering</h2>
-
-			<p>
-				The volume view below demonstrates 3D volume rendering using ray marching.
-				It shows a Maximum Intensity Projection (MIP): the brightest voxel along each
-				ray. Use the contrast limits and gamma sliders to adjust the display.
+				HL60s were imaged using the SOLS microscope at volumetric rate of 1.1 vol/s. The volumetric rendering
+				below displays collected datasets. Cells are stimulated with 488nm light at timepoint 8.
 			</p>
 
 			<!-- Volume view with its own controls -->
 			<div class="volume-view-wrapper"
 				 data-datasets='[
-					{"basePath": "data/volumes/",
-					 "label": "Cell 24"},
-					{"basePath": "data/volumes2/",
-					 "label": "Cell 21"}
+					{"basePath": "data/volumes_24_20260731/"},
+					{"basePath": "data/volumes_19_20260729/"},
+					{"basePath": "data/volumes_18_20260729/"},
+					{"basePath": "data/volumes_17_20260729/"}
 				 ]'>
 				<div class="dataset-nav">
 					<button class="dataset-prev" aria-label="Previous dataset" title="Previous dataset">&lsaquo;</button>
 					<button class="dataset-next" aria-label="Next dataset" title="Next dataset">&rsaquo;</button>
 					<span class="dataset-label"></span>
 				</div>
-				<div class="view-buttons">
-					<button class="view-btn" data-view="iso" title="Isometric">
-						<img src="icons/iso.svg" width="30" height="30" alt="Isometric view">
-					</button>
-					<button class="view-btn" data-view="top" title="Top">
-						<img src="icons/top.svg" width="30" height="30" alt="Top view">
-					</button>
-					<button class="view-btn" data-view="bottom" title="Bottom">
-						<img src="icons/bottom.svg" width="30" height="30" alt="Bottom view">
-					</button>
-					<button class="view-btn" data-view="front" title="Front">
-						<img src="icons/front.svg" width="30" height="30" alt="Front view">
-					</button>
-					<button class="view-btn" data-view="back" title="Back">
-						<img src="icons/back.svg" width="30" height="30" alt="Back view">
-					</button>
-					<button class="view-btn" data-view="left" title="Left">
-						<img src="icons/left.svg" width="30" height="30" alt="Left view">
-					</button>
-					<button class="view-btn" data-view="right" title="Right">
-						<img src="icons/right.svg" width="30" height="30" alt="Right view">
-					</button>
-				</div>
-				<div class="volume-view" data-basepath="data/volumes/"></div>
+				<div class="view-buttons"></div>
+				<div class="volume-view" data-basepath="data/volumes_24_20260731/"></div>
 				<div class="view-bottom-cap"></div>
 				<div class="volume-controls">
 					<div class="volume-control-row volume-playback-row">
@@ -260,6 +103,96 @@
 			<p class="controls-hint">
 				Keyboard: Space = play/pause focused view, Arrow keys = step frames
 			</p>
+			
+			<h2>Mesh Generation</h2>
+
+			<p>
+				Meshes of the cell surface are generated to visualize membrane dynamics.
+			</p>
+
+			<!-- Inline view with its own controls -->
+			<div class="mesh-view-wrapper"
+				 data-datasets='[
+					{"basePath": "data/meshes_24_20260731/mesh"},
+					{"basePath": "data/meshes_19_20260729/mesh"},
+					{"basePath": "data/meshes_18_20260729/mesh"},
+					{"basePath": "data/meshes_17_20260729/mesh"}
+				 ]'>
+				<div class="dataset-nav">
+					<button class="dataset-prev" aria-label="Previous dataset" title="Previous dataset">&lsaquo;</button>
+					<button class="dataset-next" aria-label="Next dataset" title="Next dataset">&rsaquo;</button>
+					<span class="dataset-label"></span>
+				</div>
+				<div class="view-buttons"></div>
+				<div class="mesh-view" data-basepath="data/meshes_24_20260731/mesh"></div>
+				<div class="view-bottom-cap"></div>
+				<div class="view-controls">
+					<button class="view-play" aria-label="Play" title="Play">
+						<svg class="icon-play" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M3 2v12l10-6z"/></svg>
+						<svg class="icon-pause" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M3 2h3.5v12H3zM9.5 2H13v12H9.5z"/></svg>
+					</button>
+					<input type="range" class="view-timeline" min="0" max="0" value="0">
+					<span class="view-frame">000</span>
+					<div class="view-speed-control">
+						<label>FPS:</label>
+						<input type="number" class="view-fps" min="1" max="60" step="1" value="8" aria-label="Playback speed in frames per second">
+					</div>
+				</div>
+				<div class="view-progress">
+					<span class="progress-label">Loading:</span>
+					<div class="progress-bar-wrapper">
+						<div class="progress-bar"></div>
+					</div>
+					<span class="progress-text">0/&hellip;</span>
+				</div>
+			</div>
+			<!-- Inline view with its own controls -->
+
+			<p>
+				Fine membrane features are classified using the shape diameter function.
+				Individual membrane reservoirs are labeled in blue and lamellipodia in orange.
+			</p>
+
+			<!-- Inline view with its own controls -->
+			<div class="mesh-view-wrapper"
+				 data-datasets='[
+					{"basePath": "data/meshes_24_20260731/mesh"},
+					{"basePath": "data/meshes_19_20260729/mesh"},
+					{"basePath": "data/meshes_18_20260729/mesh"},
+					{"basePath": "data/meshes_17_20260729/mesh"}
+				 ]'>
+				<div class="dataset-nav">
+					<button class="dataset-prev" aria-label="Previous dataset" title="Previous dataset">&lsaquo;</button>
+					<button class="dataset-next" aria-label="Next dataset" title="Next dataset">&rsaquo;</button>
+					<span class="dataset-label"></span>
+				</div>
+				<div class="view-buttons"></div>
+				<div class="mesh-view"
+					 data-basepath="data/meshes_24_20260731/mesh"
+					 data-vertexcolors="true"></div>
+				<div class="view-bottom-cap"></div>
+				<div class="view-controls">
+					<button class="view-play" aria-label="Play" title="Play">
+						<svg class="icon-play" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M3 2v12l10-6z"/></svg>
+						<svg class="icon-pause" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M3 2h3.5v12H3zM9.5 2H13v12H9.5z"/></svg>
+					</button>
+					<input type="range" class="view-timeline" min="0" max="0" value="0">
+					<span class="view-frame">000</span>
+					<div class="view-speed-control">
+						<label>FPS:</label>
+						<input type="number" class="view-fps" min="1" max="60" step="1" value="8" aria-label="Playback speed in frames per second">
+					</div>
+				</div>
+				<div class="view-progress">
+					<span class="progress-label">Loading:</span>
+					<div class="progress-bar-wrapper">
+						<div class="progress-bar"></div>
+					</div>
+					<span class="progress-text">0/&hellip;</span>
+				</div>
+			</div>
+			<!-- Inline view with its own controls -->
+
 		</article>
 	</body>
 </html>

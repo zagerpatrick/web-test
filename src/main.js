@@ -40,7 +40,8 @@ function init() {
  * `{ basePath, label, caption, ... }` objects. Without it the viewer has a single
  * dataset taken from the view element's own attributes (`data-basepath`, ...).
  * Every dataset inherits `defaults`, so per-dataset entries only need to list
- * what differs.
+ * what differs. `label` is optional: when omitted it is derived from the data
+ * folder name (see labelFromBasePath).
  * @param {HTMLElement} wrapper
  * @param {Object} defaults - Values derived from the view element's data attributes
  * @returns {Object[]} At least one dataset
@@ -62,6 +63,25 @@ function readDatasets(wrapper, defaults) {
 }
 
 /**
+ * Derive a display label from a dataset's data folder.
+ *
+ * Folders follow `<kind>_<cell>_<YYYYMMDD>`, e.g. `data/volumes_21_20260731/` or
+ * `data/meshes_21_20260731/mesh` -> "20260731 Cell 21". Any other folder name is
+ * shown as-is; an empty path gives null so the caller can fall back.
+ * @param {string} basePath - Directory (volumes) or file prefix (meshes)
+ * @returns {string|null}
+ */
+function labelFromBasePath(basePath) {
+	if (!basePath) return null;
+	const match = /(?:^|\/)(?:[^/]+_)?(\d+)_(\d{8})\/?(?:[^/]*)$/.exec(basePath);
+	if (match) return `${match[2]} Cell ${match[1]}`;
+	const segments = basePath.split('/').filter(Boolean);
+	// A mesh basePath ends in a file prefix; a volume basePath ends in the folder
+	const folder = basePath.endsWith('/') ? segments[segments.length - 1] : segments[segments.length - 2];
+	return folder || null;
+}
+
+/**
  * Wire the prev/next dataset arrows and label in the header bar of one viewer
  * (eLife figure-supplement style). The arrows disable at either end rather than
  * wrapping. Hidden when there is only one dataset.
@@ -79,7 +99,7 @@ function wireDatasetNav(wrapper, datasets, onChange) {
 
 	const render = () => {
 		const ds = datasets[index];
-		if (label) label.textContent = ds.label || `Dataset ${index + 1}`;
+		if (label) label.textContent = ds.label || labelFromBasePath(ds.basePath) || `Dataset ${index + 1}`;
 		if (prevBtn) prevBtn.disabled = index === 0;
 		if (nextBtn) nextBtn.disabled = index === datasets.length - 1;
 	};
@@ -101,6 +121,54 @@ function wireDatasetNav(wrapper, datasets, onChange) {
 	if (prevBtn) prevBtn.addEventListener('click', () => go(-1));
 	if (nextBtn) nextBtn.addEventListener('click', () => go(1));
 	render();
+}
+
+/**
+ * Camera presets offered by the view buttons above every viewer, in display
+ * order. `id` is passed to `view.setView()` and names the icon in `icons/`.
+ */
+const VIEW_PRESETS = [
+	{ id: 'iso', label: 'Isometric' },
+	{ id: 'top', label: 'Top' },
+	{ id: 'bottom', label: 'Bottom' },
+	{ id: 'front', label: 'Front' },
+	{ id: 'back', label: 'Back' },
+	{ id: 'left', label: 'Left' },
+	{ id: 'right', label: 'Right' }
+];
+
+/**
+ * Fill the `.view-buttons` bar of one viewer with a button per camera preset
+ * and wire each to `view.setView()`. Any buttons already present in the markup
+ * are kept and wired instead of being rebuilt.
+ * @param {HTMLElement} wrapper
+ * @param {{setView: Function}} view
+ */
+function wireViewButtons(wrapper, view) {
+	const container = wrapper.querySelector('.view-buttons');
+	if (!container) return;
+
+	if (!container.querySelector('.view-btn')) {
+		for (const { id, label } of VIEW_PRESETS) {
+			const btn = document.createElement('button');
+			btn.className = 'view-btn';
+			btn.dataset.view = id;
+			btn.title = label;
+
+			const icon = document.createElement('img');
+			icon.src = `icons/${id}.svg`;
+			icon.width = 30;
+			icon.height = 30;
+			icon.alt = `${label} view`;
+
+			btn.appendChild(icon);
+			container.appendChild(btn);
+		}
+	}
+
+	container.querySelectorAll('.view-btn').forEach((btn) => {
+		btn.addEventListener('click', () => view.setView(btn.dataset.view));
+	});
 }
 
 /**
@@ -142,7 +210,8 @@ function initMeshViews() {
 		// Defaults come from the view element; the wrapper's data-datasets list
 		// (if any) overrides them per dataset. data-meshcount and data-startindex are
 		// optional: when omitted the view discovers the numbering origin and the file
-		// count from the server.
+		// count from the server. The coverslip attributes (data-coverslip="false",
+		// data-coverslip-size, data-coverslip-opacity) apply to the whole view.
 		const datasets = readDatasets(wrapper, {
 			basePath: elem.dataset.basepath || 'data/meshes/mesh',
 			meshCount: elem.dataset.meshcount ? parseInt(elem.dataset.meshcount, 10) : undefined,
@@ -169,6 +238,9 @@ function initMeshViews() {
 			startIndex: first.startIndex,
 			enableControls: true,
 			useVertexColors: !!first.vertexColors,
+			showCoverslip: elem.dataset.coverslip !== 'false',
+			coverslipSize: elem.dataset.coverslipSize ? parseFloat(elem.dataset.coverslipSize) : undefined,
+			coverslipOpacity: elem.dataset.coverslipOpacity ? parseFloat(elem.dataset.coverslipOpacity) : undefined,
 			onCountResolved: (count) => {
 				// Timeline range and progress total follow the resolved count
 				if (timeline) timeline.max = Math.max(count - 1, 0);
@@ -228,11 +300,7 @@ function initMeshViews() {
 		}
 
 		// Wire up view preset buttons
-		wrapper.querySelectorAll('.view-btn').forEach(btn => {
-			btn.addEventListener('click', () => {
-				view.setView(btn.dataset.view);
-			});
-		});
+		wireViewButtons(wrapper, view);
 
 		// Track focus for keyboard controls
 		elem.addEventListener('mouseenter', () => {
@@ -259,7 +327,8 @@ function initVolumeViews() {
 
 		// Defaults come from the view element; the wrapper's data-datasets list
 		// (if any) overrides them per dataset. A dataset may also carry
-		// contrastMin / contrastMax (0-1) and gamma (0.2-2) presets.
+		// contrastMin / contrastMax (0-1) and gamma (0.2-2) presets. The coverslip
+		// attributes (data-coverslip="false", data-coverslip-opacity) apply to the view.
 		const datasets = readDatasets(wrapper, {
 			basePath: elem.dataset.basepath || 'data/volumes/'
 		});
@@ -313,6 +382,8 @@ function initVolumeViews() {
 			contrastMax: initialContrastMax,
 			gamma: initialGamma,
 			stepCount: 512,
+			showCoverslip: elem.dataset.coverslip !== 'false',
+			coverslipOpacity: elem.dataset.coverslipOpacity ? parseFloat(elem.dataset.coverslipOpacity) : undefined,
 			onMetadataLoaded: (metadata) => {
 				// Update timeline max based on frame count
 				if (timeline) {
@@ -418,11 +489,7 @@ function initVolumeViews() {
 		});
 
 		// Wire up view preset buttons
-		wrapper.querySelectorAll('.view-btn').forEach(btn => {
-			btn.addEventListener('click', () => {
-				view.setView(btn.dataset.view);
-			});
-		});
+		wireViewButtons(wrapper, view);
 
 		// Track focus for keyboard controls
 		elem.addEventListener('mouseenter', () => {

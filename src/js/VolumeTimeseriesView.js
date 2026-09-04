@@ -4,6 +4,15 @@ import sharedRenderer from './SharedRenderer.js';
 import VolumeLoader from './VolumeLoader.js';
 import VolumeMaterialFactory from './VolumeMaterialFactory.js';
 import OrientationMarker from './OrientationMarker.js';
+import Coverslip from './Coverslip.js';
+import { BACKGROUND, COVERSLIP } from './RenderStyle.js';
+
+// First-frame centring: voxels at or above this fraction of the dataset's value
+// range (above its minimum) count as "the cell", and the outermost 1% of those
+// voxels along each axis are ignored so stray bright voxels cannot pull the
+// bounding box around. The box centre of what remains is placed over the coverslip.
+const CONTENT_THRESHOLD = 0.2;
+const CONTENT_TRIM = 0.01;
 
 /**
  * VolumeTimeseriesView - Encapsulates a single volume timeseries view
@@ -14,6 +23,9 @@ import OrientationMarker from './OrientationMarker.js';
  * - One persistent R8 3D texture, updated in place from a decoded-frame cache
  * - Independent playback state
  * - Volume-specific controls (contrast limits, gamma)
+ * - A coverslip slab at the bottom face of the volume box, 25% wider than the
+ *   box; the box is shifted by one fixed XY offset so the first frame's cell is
+ *   centred on the slab while later frames keep their registered motion
  */
 export default class VolumeTimeseriesView {
 	/**
@@ -31,6 +43,8 @@ export default class VolumeTimeseriesView {
 	 * @param {number} options.contrastMax - Initial upper contrast limit 0-1 (default: 1.0)
 	 * @param {number} options.gamma - Initial gamma exponent (default: 1.0)
 	 * @param {number} options.stepCount - Ray marching steps (default: 512)
+	 * @param {boolean} options.showCoverslip - Show the coverslip slab under the volume (default: true)
+	 * @param {number} options.coverslipOpacity - Opacity of the coverslip body (default: 0.12)
 	 * @param {Function} options.onLoadProgress - Callback for load progress (loaded, total)
 	 * @param {Function} options.onLoadComplete - Callback when initial load complete
 	 * @param {Function} options.onFrameChange - Callback when frame changes (index)
@@ -50,6 +64,10 @@ export default class VolumeTimeseriesView {
 		this.contrastMax = options.contrastMax ?? 1.0;
 		this.gamma = options.gamma ?? 1.0;
 		this.stepCount = options.stepCount || 512;
+
+		// Coverslip slab drawn at the bottom face of the volume box
+		this.showCoverslip = options.showCoverslip !== false;
+		this.coverslipOpacity = options.coverslipOpacity ?? COVERSLIP.volumeBodyOpacity;
 
 		// Callbacks
 		this.onLoadProgress = options.onLoadProgress || (() => {});
@@ -79,7 +97,14 @@ export default class VolumeTimeseriesView {
 		this.volumeMaterial = null;
 		this.volumeTexture = null;
 		this.appliedIndex = -1;
+		// Box extent in normalized (unit-cube) units and the voxel-to-unit scale
+		this.normalizedSize = null;
+		this.unitsPerVoxel = 1;
+		// Fixed XY translation (normalized units) centring the first frame on the
+		// coverslip; null until frame 0 has been decoded for the current dataset
+		this.contentOffset = null;
 		this.orientationMarker = null;
+		this.coverslip = null;
 
 		// Volume infrastructure
 		this.volumeLoader = null;
@@ -95,7 +120,7 @@ export default class VolumeTimeseriesView {
 	async _init() {
 		// Create scene
 		this.scene = new THREE.Scene();
-		this.scene.background = new THREE.Color(0x000000);
+		this.scene.background = new THREE.Color(BACKGROUND.volume);
 
 		// Create camera
 		this.camera = new THREE.PerspectiveCamera(45, 1, 0.1, 20000);
@@ -227,6 +252,7 @@ export default class VolumeTimeseriesView {
 		this.volumeUrls = [];
 		this.currentIndex = 0;
 		this.appliedIndex = -1;
+		this.contentOffset = null;
 		this.loadedCount = 0;
 		this.initialLoadComplete = false;
 
@@ -259,6 +285,10 @@ export default class VolumeTimeseriesView {
 		if (this.volumeTexture) {
 			this.volumeTexture.dispose();
 			this.volumeTexture = null;
+		}
+		if (this.coverslip) {
+			this.coverslip.dispose();
+			this.coverslip = null;
 		}
 	}
 
@@ -308,6 +338,8 @@ export default class VolumeTimeseriesView {
 			sizeY / maxDim,
 			sizeZ / maxDim
 		);
+		this.normalizedSize = normalizedSize;
+		this.unitsPerVoxel = 1 / maxDim;
 
 		// Create box geometry (unit cube that will be scaled)
 		const geometry = new THREE.BoxGeometry(1, 1, 1);
@@ -324,14 +356,29 @@ export default class VolumeTimeseriesView {
 		this.volumeBox = new THREE.Mesh(geometry, this.volumeMaterial);
 		this.volumeBox.scale.copy(normalizedSize);
 
-		// Center the box
-		this.volumeBox.position.set(
-			-normalizedSize.x / 2,
-			-normalizedSize.y / 2,
-			-normalizedSize.z / 2
-		);
+		// Center the box, plus the first-frame XY offset if it is already known
+		this._positionVolumeBox();
 
+		// Drawn after the coverslip body so the additive projection adds onto the slab
+		this.volumeBox.renderOrder = 1;
 		this.scene.add(this.volumeBox);
+
+		// Coverslip: centred on the origin at the box's bottom face (slice 0, where
+		// the cell rests) and 25% wider than the box footprint, in the box's
+		// normalized units; 12 voxels thick with 1.6-voxel edges like the mesh view,
+		// outlined in white for the dark background
+		if (this.showCoverslip) {
+			this.coverslip = new Coverslip({
+				sizeX: normalizedSize.x * COVERSLIP.footprintScale,
+				sizeY: normalizedSize.y * COVERSLIP.footprintScale,
+				thickness: COVERSLIP.thickness / maxDim,
+				edgeRadius: COVERSLIP.edgeRadius / maxDim,
+				edgeColor: COVERSLIP.edgeColorDark,
+				bodyOpacity: this.coverslipOpacity
+			});
+			this.coverslip.setTop(-normalizedSize.z / 2);
+			this.scene.add(this.coverslip.group);
+		}
 
 		// On a dataset switch the user's camera orientation and zoom are kept
 		if (!resetCamera) return;
@@ -346,6 +393,88 @@ export default class VolumeTimeseriesView {
 		if (this.controls) {
 			this.controls.target.set(0, 0, 0);
 		}
+	}
+
+	/**
+	 * Place the box so the volume is centred on the origin, shifted in XY by the
+	 * first-frame content offset once that is known
+	 * @private
+	 */
+	_positionVolumeBox() {
+		if (!this.volumeBox || !this.normalizedSize) return;
+		const offset = this.contentOffset || { x: 0, y: 0 };
+		this.volumeBox.position.set(
+			-this.normalizedSize.x / 2 + offset.x,
+			-this.normalizedSize.y / 2 + offset.y,
+			-this.normalizedSize.z / 2
+		);
+	}
+
+	/**
+	 * Derive the fixed XY translation from the first frame: the centre of the
+	 * cell's (trimmed, thresholded) bounding box is moved onto the coverslip's
+	 * centre. Runs once per dataset; every later frame shares the translation so
+	 * the registration between frames is untouched.
+	 * @private
+	 * @param {number} index - Frame index the data belongs to
+	 * @param {Uint8Array} data - Decoded voxels, x fastest then y then z
+	 */
+	_centerOnFirstFrame(index, data) {
+		if (index !== 0 || this.contentOffset !== null || !this.metadata) return;
+
+		const [width, height, depth] = this.metadata.dimensions;
+		if (data.length < width * height * depth) return;
+		const [low, high] = this.metadata.valueRange || [0, 255];
+		const threshold = low + CONTENT_THRESHOLD * (high - low);
+
+		// Column (x) and row (y) counts of voxels at or above the threshold
+		const xCounts = new Uint32Array(width);
+		const yCounts = new Uint32Array(height);
+		let i = 0;
+		for (let z = 0; z < depth; z++) {
+			for (let y = 0; y < height; y++) {
+				let rowCount = 0;
+				for (let x = 0; x < width; x++, i++) {
+					if (data[i] >= threshold) {
+						xCounts[x]++;
+						rowCount++;
+					}
+				}
+				yCounts[y] += rowCount;
+			}
+		}
+
+		// Midpoint of the extent left after trimming the outer fraction on each side
+		const trimmedCenter = (counts) => {
+			let total = 0;
+			for (let k = 0; k < counts.length; k++) total += counts[k];
+			if (total === 0) return null;
+			const skip = CONTENT_TRIM * total;
+			let lo = 0;
+			for (let acc = 0; lo < counts.length; lo++) {
+				acc += counts[lo];
+				if (acc > skip) break;
+			}
+			let hi = counts.length - 1;
+			for (let acc = 0; hi >= 0; hi--) {
+				acc += counts[hi];
+				if (acc > skip) break;
+			}
+			return (lo + hi + 1) / 2;  // voxel centres sit at k + 0.5
+		};
+		const cx = trimmedCenter(xCounts);
+		const cy = trimmedCenter(yCounts);
+		if (cx === null || cy === null) {
+			// Nothing above threshold: leave the box centred on the volume
+			this.contentOffset = { x: 0, y: 0 };
+		} else {
+			const spacing = this.metadata.spacing || [1, 1, 1];
+			this.contentOffset = {
+				x: this.normalizedSize.x / 2 - cx * spacing[0] * this.unitsPerVoxel,
+				y: this.normalizedSize.y / 2 - cy * spacing[1] * this.unitsPerVoxel
+			};
+		}
+		this._positionVolumeBox();
 	}
 
 	/**
@@ -399,6 +528,7 @@ export default class VolumeTimeseriesView {
 	 */
 	_onFrameDecoded(index, data) {
 		if (this.isDisposed) return;
+		this._centerOnFirstFrame(index, data);
 		if (index === this.currentIndex) {
 			this._applyFrame(index, data);
 		}
@@ -409,6 +539,7 @@ export default class VolumeTimeseriesView {
 	 * @private
 	 */
 	_applyFrame(index, data) {
+		this._centerOnFirstFrame(index, data);
 		if (!this.volumeTexture) {
 			this.volumeTexture = this.volumeLoader.createTexture(data);
 			this.volumeMaterial = this.materialFactory.createMaterial(this.volumeTexture, {
@@ -655,6 +786,20 @@ export default class VolumeTimeseriesView {
 	setAxesVisible(visible) {
 		if (this.orientationMarker) {
 			this.orientationMarker.setVisible(visible);
+		}
+	}
+
+	/**
+	 * Show or hide the coverslip slab
+	 * @param {boolean} visible
+	 */
+	setCoverslipVisible(visible) {
+		this.showCoverslip = visible;
+		if (this.coverslip) {
+			this.coverslip.setVisible(visible);
+		} else if (visible && this.volumeBox) {
+			// Created lazily: rebuild the box decorations with the current metadata
+			this._createVolumeBox({ resetCamera: false });
 		}
 	}
 

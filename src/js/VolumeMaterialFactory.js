@@ -48,6 +48,9 @@ export default class VolumeMaterialFactory {
 			fragmentShader: volumeFragmentShader,
 			side: THREE.BackSide,
 			transparent: true,
+			// Additive MIP like napari: the projection adds onto whatever is behind it
+			// (black background, translucent coverslip) instead of covering it
+			blending: THREE.AdditiveBlending,
 			depthWrite: false,
 			depthTest: true
 		});

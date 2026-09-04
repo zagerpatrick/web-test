@@ -1,11 +1,31 @@
 """
 Convert PLY meshes to GLB format with face colors based on labels.
 
-Face labels are mapped to colors for visualization in Three.js.
-Uses flat shading (per-face normals and colors) by duplicating vertices.
-Optionally compresses output using meshoptimizer (gltfpack).
+Labels come from a numpy object array with one entry per frame, either
+per-vertex (e.g. ``561_labv_corr_list_1.npy``, rows zero-padded to the largest
+vertex count) or per-face (``561_labf_list_1.npy``). Vertex labels are turned
+into face labels by majority vote over each face's three vertices, and each
+face label is mapped to a colour for visualization in Three.js.
+Vertices are duplicated per face so every face keeps a crisp label colour;
+normals are omitted and rebuilt (smooth) by the viewer at load time.
+
+Every frame of a sequence is translated by the SAME offset (the centre of the
+bounding box of the whole sequence, or --center), so registered meshes keep
+their frame-to-frame positioning in the viewer. The offset and the sequence
+bounds are written to <output-dir>/metadata.json.
+
+Per-vertex ambient occlusion (AO) is baked with the same cosine-weighted
+hemisphere ray casting as lsprocess.mesh_vis.napari_ao and stored in the
+alpha channel of COLOR_0 as *visibility*: alpha = 1 - ao (1.0 = fully exposed,
+0.0 = fully occluded). The viewer's surface shader reads it back; files without
+baked AO have alpha 1 and render without AO darkening. Uses embree
+(`pip install embreex`) when available; the pure-Python fallback is ~100x slower.
+
+Optionally compresses output using meshoptimizer (gltfpack), which keeps the
+RGBA vertex colours as 8-bit normalized VEC4.
 """
 
+import json
 import numpy as np
 import trimesh
 from pathlib import Path
@@ -21,12 +41,127 @@ from gltflib import (
 )
 
 
-# Color mapping for face labels (RGBA, values 0-1)
+# Color mapping for face labels (RGBA, values 0-1): the Paul Tol palette used by
+# MeshVis (cm3 / cm4): grey #BBBBBB, blue #0077BB, red #CC3311
 LABEL_COLORS = {
-    0: [0.5, 0.5, 0.5, 1.0],  # Gray (unlabeled/background)
-    1: [0.2, 0.6, 1.0, 1.0],  # Blue
-    2: [1.0, 0.4, 0.2, 1.0],  # Orange/Red
+    0: [187 / 255, 187 / 255, 187 / 255, 1.0],  # #BBBBBB grey (unlabeled/background)
+    1: [0 / 255, 119 / 255, 187 / 255, 1.0],    # #0077BB blue
+    2: [204 / 255, 51 / 255, 17 / 255, 1.0],    # #CC3311 red
+    3: [66 / 255, 66 / 255, 66 / 255, 1.0],     # #424242 dark grey (cm4 class 3)
 }
+
+
+def vertex_to_face_labels(vertex_labels: np.ndarray, faces: np.ndarray) -> np.ndarray:
+    """
+    Majority vote of each face's three vertex labels.
+
+    A face whose vertices carry two or three copies of one label gets that label;
+    a face with three different labels gets the smallest of them, so the result is
+    deterministic. Boundary faces between two labelled regions therefore snap to
+    whichever label two of their corners share.
+    """
+    corner_labels = np.sort(np.asarray(vertex_labels)[faces], axis=1)  # (F, 3)
+    return np.where(corner_labels[:, 1] == corner_labels[:, 2], corner_labels[:, 1], corner_labels[:, 0])
+
+
+def resolve_face_labels(labels: np.ndarray, mesh: trimesh.Trimesh, label_type: str = "auto") -> tuple[np.ndarray, str]:
+    """
+    Return per-face labels for ``mesh`` from either face or vertex labels.
+
+    Args:
+        labels: one frame's label array (face labels, or vertex labels possibly
+            zero-padded beyond the vertex count)
+        mesh: the frame's mesh
+        label_type: "face", "vertex", or "auto" (face when the length equals the
+            face count, otherwise vertex)
+
+    Returns:
+        (face_labels, kind) with kind in {"face", "vertex"}
+    """
+    labels = np.asarray(labels).astype(np.int64)
+    n_faces = len(mesh.faces)
+    n_verts = len(mesh.vertices)
+    kind = label_type
+    if kind == "auto":
+        kind = "face" if len(labels) == n_faces else "vertex"
+    if kind == "face":
+        if len(labels) != n_faces:
+            raise ValueError(f"Face count mismatch: mesh has {n_faces} faces, labels has {len(labels)} entries")
+        return labels, kind
+    if len(labels) < n_verts:
+        raise ValueError(f"Vertex label array too short: mesh has {n_verts} vertices, labels has {len(labels)} entries")
+    return vertex_to_face_labels(labels[:n_verts], mesh.faces), kind
+
+# Ambient occlusion defaults (match lsprocess.mesh_vis.napari_ao.bake_ambient_occlusion)
+AO_RAYS = 32
+AO_SEED = 0
+
+_warned_no_embree = False
+
+
+def bake_ambient_occlusion(mesh: trimesh.Trimesh, n_rays: int = AO_RAYS, seed: int = AO_SEED) -> np.ndarray:
+    """
+    Bake per-vertex ambient occlusion via cosine-weighted hemisphere rays.
+
+    Returns a float32 array of length len(mesh.vertices) in [0, 1], where 1 is
+    fully occluded (deep cavity) and 0 is fully exposed (open hemisphere).
+
+    At each vertex, n_rays directions are drawn from a cosine-weighted hemisphere
+    around the vertex normal (Malley's method) and the fraction that hits any face
+    of the mesh is the AO value. Ray origins are nudged outward by
+    1e-5 * bbox_diag so vertices do not self-intersect their incident faces.
+    Verbatim port of lsprocess.mesh_vis.napari_ao.bake_ambient_occlusion.
+    """
+    global _warned_no_embree
+    rng = np.random.default_rng(seed)
+
+    # Cosine-weighted hemisphere samples around +Z (Malley's method)
+    u1 = rng.random(n_rays)
+    u2 = rng.random(n_rays)
+    r = np.sqrt(u1)
+    theta = 2.0 * np.pi * u2
+    h = np.column_stack(
+        [r * np.cos(theta), r * np.sin(theta), np.sqrt(np.maximum(0.0, 1.0 - u1))]
+    ).astype("float64")
+
+    verts = np.asarray(mesh.vertices, dtype="float64")
+    norms = np.asarray(mesh.vertex_normals, dtype="float64")
+
+    # Per-vertex orthonormal frame (t, b, n)
+    ref = np.tile(np.array([1.0, 0.0, 0.0]), (len(norms), 1))
+    swap = np.abs(norms[:, 0]) > 0.9
+    ref[swap] = np.array([0.0, 1.0, 0.0])
+    t = np.cross(norms, ref)
+    t /= np.linalg.norm(t, axis=1, keepdims=True) + 1e-12
+    b = np.cross(norms, t)
+
+    # Offset origins outward to avoid self-intersection at the source vertex
+    bbox_diag = float(np.linalg.norm(mesh.extents))
+    eps = bbox_diag * 1e-5
+    origins = verts + norms * eps
+
+    # World-space ray directions: h.x * t + h.y * b + h.z * n, broadcast over vertices
+    dirs = (
+        h[None, :, 0:1] * t[:, None, :]
+        + h[None, :, 1:2] * b[:, None, :]
+        + h[None, :, 2:3] * norms[:, None, :]
+    )
+    origins_flat = np.repeat(origins, n_rays, axis=0)
+    dirs_flat = dirs.reshape(-1, 3)
+
+    try:
+        from trimesh.ray.ray_pyembree import RayMeshIntersector
+
+        intersector = RayMeshIntersector(mesh)
+    except Exception:
+        if not _warned_no_embree:
+            print("  WARNING: embree not available (pip install embreex); "
+                  "falling back to the pure-Python ray caster, which is ~100x slower")
+            _warned_no_embree = True
+        intersector = mesh.ray
+
+    hits = intersector.intersects_any(origins_flat, dirs_flat)
+    return hits.reshape(-1, n_rays).mean(axis=1).astype("float32")
 
 
 def load_ply_mesh(ply_path: Path) -> trimesh.Trimesh:
@@ -35,12 +170,25 @@ def load_ply_mesh(ply_path: Path) -> trimesh.Trimesh:
     return mesh
 
 
-def center_vertices(vertices: np.ndarray) -> np.ndarray:
-    """Center vertices at the origin using bounding box center."""
-    bbox_min = vertices.min(axis=0)
-    bbox_max = vertices.max(axis=0)
-    center = (bbox_min + bbox_max) / 2
-    return vertices - center
+def bbox_center(vertices: np.ndarray) -> np.ndarray:
+    """Bounding-box centre of a vertex array, in the array's own axis order."""
+    return (vertices.min(axis=0) + vertices.max(axis=0)) / 2
+
+
+def sequence_bounds(ply_files: list[Path]) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Bounding box enclosing every frame of a sequence, in (z, y, x) array order.
+
+    Returns (min_corner, max_corner). Centring all frames on the middle of this
+    box keeps registered meshes in their true relative positions.
+    """
+    lo = np.full(3, np.inf)
+    hi = np.full(3, -np.inf)
+    for ply_path in ply_files:
+        bounds = load_ply_mesh(ply_path).bounds
+        lo = np.minimum(lo, bounds[0])
+        hi = np.maximum(hi, bounds[1])
+    return lo, hi
 
 
 def reorder_vertices_zyx_to_xyz(vertices: np.ndarray) -> np.ndarray:
@@ -62,12 +210,27 @@ def reorder_vertices_zyx_to_xyz(vertices: np.ndarray) -> np.ndarray:
 def expand_mesh_for_flat_shading(
     vertices: np.ndarray,
     faces: np.ndarray,
-    face_labels: np.ndarray
+    face_labels: np.ndarray,
+    vertex_ao: np.ndarray | None = None,
+    center: np.ndarray | None = None
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    Expand mesh vertices for flat shading.
+    Expand mesh vertices so every face owns its three vertices.
 
-    Normals are omitted - Three.js computes them at runtime with flatShading: true.
+    Normals are omitted - the viewer rebuilds smooth normals at load time by
+    merging vertices that share a position.
+
+    Args:
+        vertices: (N, 3) vertex positions in (z, y, x) array order
+        faces: (M, 3) face indices
+        face_labels: (M,) integer label per face, mapped through LABEL_COLORS
+        vertex_ao: optional (N,) per-vertex ambient occlusion in [0, 1]
+            (1 = occluded). Stored as visibility in the colour alpha channel:
+            alpha = 1 - ao. Alpha stays 1.0 when omitted.
+        center: (3,) offset in (z, y, x) order subtracted from every vertex.
+            Pass the same value for every frame of a sequence to preserve
+            registration. Defaults to this frame's own bounding-box centre,
+            which re-centres each frame independently (legacy behaviour).
 
     Returns:
         expanded_vertices: (num_faces * 3, 3) vertex positions
@@ -76,8 +239,10 @@ def expand_mesh_for_flat_shading(
     """
     num_faces = len(faces)
 
-    # Center vertices at origin
-    vertices = center_vertices(vertices)
+    # Translate by the shared sequence offset (or this frame's own centre)
+    if center is None:
+        center = bbox_center(vertices)
+    vertices = vertices - np.asarray(center, dtype=vertices.dtype)
 
     # Map (z, y, x) array order onto world (x, y, z) to match the volume view
     vertices = reorder_vertices_zyx_to_xyz(vertices)
@@ -93,6 +258,11 @@ def expand_mesh_for_flat_shading(
     for face_idx, label in enumerate(face_labels):
         color = LABEL_COLORS.get(int(label), LABEL_COLORS[0])
         expanded_colors[face_idx * 3:(face_idx + 1) * 3] = color
+
+    # Alpha channel carries visibility (1 - AO) of each expanded vertex's source vertex
+    if vertex_ao is not None:
+        visibility = 1.0 - np.clip(np.asarray(vertex_ao, dtype=np.float32), 0.0, 1.0)
+        expanded_colors[:, 3] = visibility[faces.flatten()]
 
     # New indices - sequential
     new_indices = np.arange(num_faces * 3, dtype=np.uint32).reshape(-1, 3)
@@ -282,36 +452,53 @@ def compress_glb(input_path: Path, output_path: Path, gltfpack_path: str, use_dr
 
 def convert_ply_to_glb(
     ply_path: Path,
-    face_labels: np.ndarray,
+    labels: np.ndarray,
     output_path: Path,
     gltfpack_path: str | None = None,
-    use_draco: bool = False
+    use_draco: bool = False,
+    ao_rays: int = AO_RAYS,
+    ao_seed: int = AO_SEED,
+    center: np.ndarray | None = None,
+    label_type: str = "auto"
 ) -> None:
     """
-    Convert a single PLY file to GLB with face colors.
+    Convert a single PLY file to GLB with face colors and baked AO.
 
     Args:
         ply_path: Path to input PLY file
-        face_labels: Array of face label values
+        labels: This frame's labels, per face or per vertex (see resolve_face_labels)
         output_path: Path to output GLB file
         gltfpack_path: Optional path to gltfpack for compression
         use_draco: Use Draco compression instead of meshopt
+        ao_rays: Hemisphere rays per vertex for the AO bake; 0 disables AO
+        ao_seed: RNG seed for the AO ray directions
+        center: (3,) shared (z, y, x) offset subtracted from the vertices; None
+            re-centres this frame on its own bounding box
+        label_type: "auto", "vertex" or "face" (how to read ``labels``)
     """
     # Load mesh
     mesh = load_ply_mesh(ply_path)
     vertices = np.array(mesh.vertices)
     faces = np.array(mesh.faces)
 
-    # Verify face count matches labels
-    if len(faces) != len(face_labels):
-        raise ValueError(
-            f"Face count mismatch: mesh has {len(faces)} faces, "
-            f"labels has {len(face_labels)} entries"
-        )
+    # Per-face labels (vertex labels are majority-voted per face)
+    face_labels, kind = resolve_face_labels(labels, mesh, label_type)
+    classes, counts = np.unique(face_labels, return_counts=True)
+    print(f"  labels: {kind} -> faces " + ", ".join(f"{int(c)}: {int(n)}" for c, n in zip(classes, counts)))
 
-    # Expand mesh for flat shading (normals omitted - computed by Three.js)
+    # Bake per-vertex AO on the mesh as loaded (translation and the axis swap
+    # below do not change occlusion)
+    vertex_ao = None
+    if ao_rays > 0:
+        vertex_ao = bake_ambient_occlusion(mesh, n_rays=ao_rays, seed=ao_seed)
+        mean_ao = float(vertex_ao.mean())
+        print(f"  AO: mean {mean_ao:.3f}, max {float(vertex_ao.max()):.3f} ({ao_rays} rays/vertex)")
+        if mean_ao > 0.8:
+            print("  WARNING: nearly everything is occluded; the mesh normals may point inward")
+
+    # Expand mesh per face (normals omitted - rebuilt by the viewer)
     exp_vertices, exp_colors, new_indices = expand_mesh_for_flat_shading(
-        vertices, faces, face_labels
+        vertices, faces, face_labels, vertex_ao, center
     )
 
     # Create GLB file (possibly to temp location if we'll compress)
@@ -335,10 +522,19 @@ def batch_convert(
     output_dir: Path,
     label_colors: dict = None,
     compress: bool = True,
-    use_draco: bool = False
+    use_draco: bool = False,
+    ao_rays: int = AO_RAYS,
+    ao_seed: int = AO_SEED,
+    center: np.ndarray | None = None,
+    label_type: str = "auto"
 ) -> None:
     """
     Batch convert all PLY files in a directory to GLB.
+
+    Every frame is translated by one shared offset so registered sequences keep
+    their frame-to-frame positioning: the centre of the bounding box of the
+    whole sequence by default, or ``center`` when given. The offset and the
+    sequence bounds are recorded in ``<output_dir>/metadata.json``.
 
     Args:
         mesh_dir: Directory containing PLY mesh files
@@ -347,6 +543,11 @@ def batch_convert(
         label_colors: Optional custom color mapping {label: [r, g, b, a]}
         compress: Whether to compress output using gltfpack
         use_draco: Use Draco compression instead of meshopt (smaller but needs decoder)
+        ao_rays: Hemisphere rays per vertex for the AO bake; 0 disables AO
+        ao_seed: RNG seed for the AO ray directions
+        center: Optional (3,) offset in (z, y, x) array order overriding the
+            sequence bounding-box centre
+        label_type: "auto", "vertex" or "face" (see resolve_face_labels)
     """
     global LABEL_COLORS
     if label_colors is not None:
@@ -363,7 +564,7 @@ def batch_convert(
             print("Warning: gltfpack not found, output will not be compressed")
             print("  Install with: npm install gltfpack")
 
-    # Load face labels
+    # Load labels: one entry per frame, per vertex (zero-padded) or per face
     all_labels = np.load(labels_path, allow_pickle=True)
 
     # Get sorted list of PLY files
@@ -377,18 +578,56 @@ def batch_convert(
     # Create output directory
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # One shared offset for the whole sequence (z, y, x), so registered frames
+    # keep their relative positions instead of each being re-centred on itself
+    seq_min, seq_max = sequence_bounds(ply_files)
+    if center is None:
+        center = (seq_min + seq_max) / 2
+        centering = "sequence-bbox"
+    else:
+        center = np.asarray(center, dtype=float)
+        centering = "explicit"
+    print(f"Sequence bounds (z, y, x): {seq_min.round(2).tolist()} .. {seq_max.round(2).tolist()}")
+    print(f"Shared centre (z, y, x): {center.round(3).tolist()} [{centering}]")
+
     # Convert each mesh
-    for i, (ply_path, face_labels) in enumerate(zip(ply_files, all_labels)):
+    for i, (ply_path, frame_labels) in enumerate(zip(ply_files, all_labels)):
         output_path = output_dir / f"{ply_path.stem}.glb"
         print(f"Converting {i+1}/{len(ply_files)}: {ply_path.name} -> {output_path.name}")
 
         try:
-            convert_ply_to_glb(ply_path, face_labels, output_path, gltfpack_path, use_draco)
+            convert_ply_to_glb(
+                ply_path, frame_labels, output_path, gltfpack_path, use_draco,
+                ao_rays=ao_rays, ao_seed=ao_seed, center=center, label_type=label_type
+            )
         except Exception as e:
             print(f"  Error: {e}")
             continue
 
+    # Record how the sequence was placed (world order x, y, z = array order reversed)
+    def _xyz(v):
+        return [float(v[2]), float(v[1]), float(v[0])]
+
+    metadata = {
+        "frameCount": len(ply_files),
+        "centering": centering,
+        "center": _xyz(center),
+        "centerArrayOrder": [float(c) for c in center],
+        "bounds": {"min": _xyz(seq_min - center), "max": _xyz(seq_max - center)},
+        "sourceBounds": {"min": _xyz(seq_min), "max": _xyz(seq_max)},
+        "axisOrder": "world x, y, z = source array x, y, z (array order was z, y, x)",
+        "aoRays": int(ao_rays),
+        "aoAlpha": "COLOR_0 alpha = 1 - ambient occlusion" if ao_rays > 0 else None,
+        "labelColors": {str(k): v for k, v in LABEL_COLORS.items()},
+        "labelSource": str(labels_path.name),
+        "labelType": label_type,
+        "files": [f"{p.stem}.glb" for p in ply_files],
+    }
+    with open(output_dir / "metadata.json", "w") as f:
+        json.dump(metadata, f, indent=2)
+
     print(f"\nConversion complete. Output saved to: {output_dir}")
+    print(f"Metadata: {output_dir / 'metadata.json'}")
 
 
 if __name__ == "__main__":
@@ -407,7 +646,15 @@ if __name__ == "__main__":
         "--labels",
         type=Path,
         required=True,
-        help="Path to numpy file with face labels"
+        help="Path to numpy object array with one label array per frame: per-vertex "
+             "(e.g. 561_labv_corr_list_1.npy, zero-padded) or per-face (561_labf_list_1.npy)"
+    )
+    parser.add_argument(
+        "--label-type",
+        choices=["auto", "vertex", "face"],
+        default="auto",
+        help="How to read --labels; auto picks face when the length matches the face count "
+             "(default: auto)"
     )
     parser.add_argument(
         "--output-dir",
@@ -425,6 +672,32 @@ if __name__ == "__main__":
         action="store_true",
         help="Use Draco compression (smaller files, but requires decoder in viewer)"
     )
+    parser.add_argument(
+        "--ao-rays",
+        type=int,
+        default=AO_RAYS,
+        help=f"Hemisphere rays per vertex for the ambient occlusion bake (default: {AO_RAYS})"
+    )
+    parser.add_argument(
+        "--ao-seed",
+        type=int,
+        default=AO_SEED,
+        help=f"Random seed for the AO ray directions (default: {AO_SEED})"
+    )
+    parser.add_argument(
+        "--no-ao",
+        action="store_true",
+        help="Skip the ambient occlusion bake (vertex alpha stays 1.0)"
+    )
+    parser.add_argument(
+        "--center",
+        type=float,
+        nargs=3,
+        metavar=("Z", "Y", "X"),
+        default=None,
+        help="Shared offset subtracted from every frame, in (z, y, x) voxel order "
+             "(default: centre of the whole sequence's bounding box)"
+    )
 
     args = parser.parse_args()
 
@@ -433,5 +706,9 @@ if __name__ == "__main__":
         args.labels,
         args.output_dir,
         compress=not args.no_compress,
-        use_draco=args.draco
+        use_draco=args.draco,
+        ao_rays=0 if args.no_ao else args.ao_rays,
+        ao_seed=args.ao_seed,
+        center=args.center,
+        label_type=args.label_type
     )

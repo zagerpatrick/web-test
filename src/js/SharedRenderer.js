@@ -45,8 +45,9 @@ class SharedRenderer {
 			canvas,
 			alpha: true  // Allow transparent background
 		});
-		this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-		this.renderer.toneMappingExposure = 0.22;
+		// No tone mapping: the surface shader writes display values directly (as vispy
+		// does) and the remaining basic materials are marked toneMapped: false
+		this.renderer.toneMapping = THREE.NoToneMapping;
 		this.renderer.outputColorSpace = THREE.SRGBColorSpace;
 
 		// Create shared GLTFLoader
