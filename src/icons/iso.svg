@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" version="1.1" viewBox="0 0 26 26">
+  <defs>
+    <style>
+      .icon-iso-st0 {
+        fill: var(--icon-face-light);
+      }
+
+      .icon-iso-st0, .icon-iso-st1, .icon-iso-st2 {
+        stroke: #777b7e;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        stroke-width: 2px;
+      }
+
+      .icon-iso-st1 {
+        fill: var(--icon-face);
+      }
+
+      .icon-iso-st2 {
+        fill: var(--icon-face-mid);
+      }
+    </style>
+  </defs>
+  <path class="icon-iso-st1" d="M22,18.5V7.5l-9,5.5v11l9-5.5Z"/>
+  <path class="icon-iso-st2" d="M13,13v11l-9-5.5V7.5l9,5.5Z"/>
+  <path class="icon-iso-st0" d="M22,7.5L13,2,4,7.5l9,5.5,9-5.5Z"/>
+</svg>

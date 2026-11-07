@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" version="1.1" viewBox="0 0 26 26">
+  <defs>
+    <style>
+      .icon-front-st0 {
+        fill: var(--icon-face);
+        opacity: .8;
+      }
+
+      .icon-front-st0, .icon-front-st1, .icon-front-st2, .icon-front-st3, .icon-front-st4 {
+        stroke: #777b7e;
+        stroke-linejoin: round;
+        stroke-width: 2px;
+      }
+
+      .icon-front-st1, .icon-front-st2, .icon-front-st3, .icon-front-st4 {
+        fill: none;
+      }
+
+      .icon-front-st2 {
+        opacity: .8;
+      }
+
+      .icon-front-st2, .icon-front-st3, .icon-front-st4 {
+        stroke-linecap: round;
+      }
+
+      .icon-front-st2, .icon-front-st4 {
+        isolation: isolate;
+      }
+    </style>
+  </defs>
+  <rect class="icon-front-st1" x="8" y="2" width="16" height="16"/>
+  <path class="icon-front-st3" d="M2,24V8l6-6v16l-6,6Z"/>
+  <path class="icon-front-st2" d="M2,24l6-6h16l-6,6H2Z"/>
+  <path class="icon-front-st4" d="M2,8l6-6h16l-6,6H2Z"/>
+  <path class="icon-front-st3" d="M18,24V8l6-6v16l-6,6Z"/>
+  <rect class="icon-front-st0" x="2" y="8" width="16" height="16"/>
+  <rect class="icon-front-st1" x="2" y="8" width="16" height="16"/>
+</svg>

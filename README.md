@@ -6,20 +6,24 @@ A Three.js web application for viewing timeseries of 3D meshes and volumetric im
 
 ```
 ├── src/                    # Source code
-│   ├── index.html          # Main HTML entry point
+│   ├── index.html          # Home page (hero mesh viewer + links to the viewer pages)
+│   ├── membrane-dynamics.html  # Neutrophil membrane dynamics viewer page
 │   ├── main.js             # Application orchestration
 │   ├── js/                 # JavaScript modules
 │   │   ├── SharedRenderer.js
 │   │   ├── MeshTimeseriesView.js
 │   │   ├── VolumeTimeseriesView.js
+│   │   ├── theme.js        # Light / dark theme toggle
 │   │   └── ...
+│   ├── icons/              # Camera-preset SVG icons, inlined into the buttons at build time
 │   └── styles/
-│       └── style.css
+│       ├── viewer.css      # Viewer components (canvas, views, controls) shared by every page
+│       ├── style.css       # Viewer page layout and typography
+│       └── home.css        # Home page layout and typography
 ├── public/                 # Static assets (served at root)
 │   ├── data/
 │   │   ├── meshes/         # GLB mesh files
 │   │   └── volumes/        # Binary volume data
-│   ├── icons/              # View orientation SVG icons
 │   ├── brotli_wasm.js      # WASM decompression module
 │   └── brotli_wasm_bg.wasm
 ├── raw-data/               # Source data (not deployed)
@@ -86,7 +90,7 @@ The `scripts/` directory contains utilities for converting raw data:
 - **Meshes** (`public/data/meshes_<cell>_<date>/`): one GLB per frame named `<prefix><NNNN>.glb`,
   zero-padded to 4 digits and numbered contiguously (no gaps). Both 0-based
   (`mesh0000.glb`) and 1-based (`mesh0001.glb`) sequences work. Each `.mesh-view`
-  in `src/index.html` names the prefix with `data-basepath` (e.g. `data/meshes/mesh`).
+  in `src/membrane-dynamics.html` names the prefix with `data-basepath` (e.g. `data/meshes/mesh`).
   The number of frames is discovered automatically from the server, so swapping in a
   new sequence needs no HTML edits. `data-meshcount` and `data-startindex` are optional
   overrides for the discovered values. Vertex colours follow the Paul Tol palette of the
@@ -102,6 +106,40 @@ The `scripts/` directory contains utilities for converting raw data:
   more fixed XY offset so the first frame's bounding-box centre sits on the centre of
   the coverslip, and seats the coverslip on that frame's lowest point; later frames
   move relative to it.
+- **Autoplay**: `data-autoplay="true"` on a `.mesh-view` or `.volume-view` starts
+  playback as soon as every file has loaded (the home page viewer does this at 6 frames
+  per second, the starting value of its FPS box).
+- **Elapsed time**: `data-frame-interval="6"` (seconds per frame) on a `.mesh-view`
+  or `.volume-view` makes the counter beside the timeline show elapsed time as
+  `MMm SSs` from 0 at the first frame instead of the frame index.
+- **Controls hint**: a `.view-hint` element placed inside a `.mesh-view` or
+  `.volume-view` is faded in the first time the pointer enters the view and out again
+  8 seconds later (later hovers show nothing); the home page uses it to list the mouse
+  and keyboard controls. Views without the element show nothing.
+- **Several sequences in one view**: a `.mesh-view` can carry `data-sequences`, a JSON
+  array of `{ "basePath", "meshCount"?, "startIndex"? }` objects, instead of a single
+  `data-basepath`. The sequences are loaded and played together, aligned at frame 0
+  (frame *i* shows file *i* of each sequence); the timeline spans the longest one and a
+  shorter sequence disappears once it runs out of frames. A `data-datasets` entry may
+  likewise list `sequences` in place of `basePath`. The home page (`src/index.html`)
+  shows `meshes_prim_3` and `meshes_prim_21` this way.
+- **Absolute positions**: `data-center="false"` (the `centerFrames` option) switches
+  off the first-frame centring described above, so meshes exported with
+  `--center 0 0 0` keep their positions in the imaging volume and sequences of
+  different cells stay in register with each other. The coverslip is then sized to
+  1.25 x the scene footprint and seated at its lowest point, and the camera is aimed at
+  the scene centre from far enough to fit it. The scene bounds come from the `bounds`
+  entry of each sequence's `metadata.json` (written by `ply_to_glb.py`); a sequence
+  without that file contributes its first frame's bounding box instead.
+  `data-rotation` (the `sceneRotation` option, degrees counterclockwise seen from
+  above) turns the meshes and coverslip about the vertical axis, e.g. `90` to lay a
+  tall field of view across a wide viewer; the camera presets are unaffected.
+  `data-coverslip-scale` sets the slab footprint relative to the scene footprint
+  (default 1.25) in absolute mode. The camera distance is divided by the
+  `--viewer-zoom` CSS custom property of the view element (default 1; 1.25 brings
+  the camera 25% closer), so a stylesheet can set it per viewer and per media query,
+  as `home.css` does for phones. `data-axes-size` sets the orientation marker's size
+  in pixels (default 120) on any mesh view.
 - **Volumes** (`public/data/volumes_<cell>_<date>/`): `metadata.json` plus one `NNNN.bin.br` per
   frame (0-based), both written by `convert-zarr-to-bin.py`. The metadata must be
   valid JSON (watch for trailing commas when editing it by hand); its `files` array is
@@ -132,9 +170,23 @@ The viewers reproduce the napari / MeshVis reference renders; every constant liv
   translation, so registration between frames is preserved.
   `MeshTimeseriesView` / `VolumeTimeseriesView` take
   `showCoverslip` and `coverslipOpacity` (plus `coverslipSize` / `coverslipThickness` for
-  meshes) and expose `setCoverslipVisible()`; in `index.html` a `.mesh-view` or
+  meshes) and expose `setCoverslipVisible()`; in `membrane-dynamics.html` a `.mesh-view` or
   `.volume-view` element can set `data-coverslip="false"`, `data-coverslip-opacity` and,
   for meshes, `data-coverslip-size` (mesh units).
+- Viewer sizes are set by the `--viewer-width` and `--viewer-height` custom
+  properties in `viewer.css` (600 x 400px by default, 300px tall on phones); a page or
+  wrapper can override them, as the home page does for its 800 x 500px hero viewer.
+- **Light / dark theme**: every page colour is a custom property declared in
+  `viewer.css` (`--bg`, `--text`, `--panel`, `--accent`, ...). Light (white page, the
+  mesh-label blue `#0077BB` as accent) is the default; the `[data-theme="dark"]` block
+  swaps in the grey-and-persimmon look. The sun / moon button at the top right of each page
+  (`.theme-toggle`, wired by `src/js/theme.js`) flips the attribute on `<html>` and
+  remembers the choice in `localStorage`; an inline script in each page's `<head>`
+  re-applies it before first paint. The camera-preset icons in `src/icons/` are
+  bundled as markup and inlined into the buttons by `main.js`; their cube faces use
+  the `--icon-face*` tokens (the accent plus two lighter shades), so they are blue in
+  light mode and persimmon in dark. The white and black bands around the canvases are
+  not themed because they match the WebGL render backgrounds.
 - The volume MIP uses additive blending so it adds onto the slab instead of covering it.
 
 ## Features

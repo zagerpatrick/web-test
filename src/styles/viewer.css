@@ -1,0 +1,739 @@
+/* Viewer components shared by every page that embeds a mesh or volume view:
+   the full-page canvas, the view elements, their playback / camera controls,
+   dataset arrows and progress bars. Page layout and typography live in the
+   page's own stylesheet (style.css, home.css). */
+
+/* Colour themes. Light (the default) is white with the Paul Tol blue of the
+   mesh labels (#0077BB) as accent; dark is the original grey-and-persimmon look.
+   The theme toggle sets data-theme="dark" on <html> (see js/theme.js). The
+   white / black bands above and below the canvases are not themed: they match
+   the WebGL backgrounds of the mesh and volume renders.
+
+   A page (or a single wrapper) can override --viewer-width / --viewer-height to
+   resize its viewers and --viewer-zoom to move the fitted camera closer (> 1)
+   or further (< 1); the mesh view reads --viewer-zoom from its element at fit
+   time. */
+:root {
+	--accent: #0077bb;
+	--accent-hover: #1a8fd6;
+	--accent-active: #005f96;
+
+	--bg: #ffffff;            /* page background */
+	--text: #1a1a1a;          /* headings, body text, labels on hover */
+	--text-soft: #333;        /* secondary text, control values */
+	--muted: #666;            /* default body colour, theme toggle icon */
+	--label: #666;            /* control labels, frame counter */
+	--faint: #777;            /* progress text */
+	--hint: #888;             /* keyboard hint, disabled arrows */
+
+	--panel: #ebebeb;         /* control bars, project cards */
+	--panel-hover: #e2e2e2;   /* card hover */
+	--input-bg: #ffffff;
+	--input-bg-hover: #f6f6f6;
+	--input-border: #bbb;
+	--subtle-bg: #f6f6f6;     /* dataset bar, progress bar */
+	--subtle-border: #ddd;
+	--track: #ccc;            /* progress track */
+	--track-strong: #bbb;     /* range slider track */
+	--thumb: #ffffff;         /* range slider handles */
+	--thumb-border: #888;
+
+	/* Cube faces of the camera-preset icons: the accent plus two lighter shades */
+	--icon-face: var(--accent);
+	--icon-face-mid: #2a93d0;
+	--icon-face-light: #6cb6e3;
+
+	--viewer-width: 600px;
+	--viewer-height: 400px;
+	--viewer-zoom: 1;
+}
+
+[data-theme="dark"] {
+	--accent: #ec5800;
+	--accent-hover: #ff7a2e;
+	--accent-active: #c94a00;
+
+	--bg: #333;
+	--text: #fffff0;
+	--text-soft: #ddd;
+	--muted: #aaa;
+	--label: #999;
+	--hint: #666;
+
+	--panel: #3d3d3d;
+	--panel-hover: #454545;
+	--input-bg: #555;
+	--input-bg-hover: #505050;
+	--input-border: #666;
+	--subtle-bg: #2a2a2a;
+	--subtle-border: #3a3a3a;
+	--track: #555;
+	--track-strong: #666;
+	--thumb: #ddd;
+	--thumb-border: #444;
+
+	--icon-face-mid: #ef7126;
+	--icon-face-light: #f28a4d;
+}
+
+/* Page colours follow the theme; each page's own stylesheet adds its typography */
+body {
+	margin: 0;
+	background-color: var(--bg);
+	color: var(--muted);
+}
+
+/* While the theme flips (one frame, set by js/theme.js) no element animates, so
+   hover transitions on buttons and cards cannot lag behind the page colours */
+[data-theme-switching],
+[data-theme-switching] *,
+[data-theme-switching] *::before,
+[data-theme-switching] *::after {
+	transition: none !important;
+}
+
+/* Theme toggle: a grey sun in dark mode (switch to light), a crescent moon in
+   light mode (switch to dark). Both icons are inline SVGs drawn in currentColor. */
+.theme-toggle {
+	background: none;
+	border: none;
+	padding: 4px;
+	width: 32px;
+	height: 32px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	color: var(--muted);
+	cursor: pointer;
+	border-radius: 6px;
+	transition: color 0.2s, background 0.2s;
+}
+
+.theme-toggle:hover {
+	color: var(--text);
+	background: var(--panel);
+}
+
+.theme-toggle:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 2px;
+}
+
+.theme-toggle svg {
+	display: block;
+	width: 20px;
+	height: 20px;
+}
+
+.theme-toggle .icon-sun,
+[data-theme="dark"] .theme-toggle .icon-moon {
+	display: none;
+}
+
+[data-theme="dark"] .theme-toggle .icon-sun {
+	display: block;
+}
+
+/* Native range sliders (timeline, gamma) follow the accent instead of the browser default */
+input[type="range"] {
+	accent-color: var(--accent);
+}
+
+/* Full-page canvas (behind content) - uses absolute positioning per Three.js manual */
+#c {
+	position: absolute;
+	left: 0;
+	top: 0;
+	width: 100%;
+	height: 100%;
+	z-index: -1;
+	pointer-events: none;  /* Allow clicks through to content */
+}
+
+/* Mesh view wrapper - contains view and controls */
+.mesh-view-wrapper {
+	margin: 40px 0;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+}
+
+/* The actual view element that Three.js renders into */
+.mesh-view {
+	position: relative;  /* anchors the .view-hint overlay */
+	width: 100%;
+	max-width: var(--viewer-width);
+	height: var(--viewer-height);
+	margin: 0 auto;
+	display: block;
+	background: transparent;
+	pointer-events: auto;  /* Re-enable for OrbitControls */
+	border-radius: 0;  /* Remove rounding - cap provides it */
+	cursor: grab;
+}
+
+.mesh-view:active {
+	cursor: grabbing;
+}
+
+/* Controls hint overlaid on a view: a `.view-hint` child of a .mesh-view or
+   .volume-view (both position: relative) is faded in by main.js the first time
+   the pointer enters the view and out again a few seconds later. It never takes
+   pointer events, so the trackball controls underneath are unaffected. */
+.view-hint {
+	position: absolute;
+	left: 50%;
+	top: 24px;
+	transform: translateX(-50%);
+	display: flex;
+	flex-wrap: wrap;
+	justify-content: center;
+	gap: 4px 18px;
+	max-width: calc(100% - 28px);
+	padding: 8px 16px;
+	border-radius: 8px;
+	/* Accent of the current theme (blue in light, persimmon in dark), slightly
+	   translucent where color-mix is supported */
+	background: var(--accent);
+	background: color-mix(in srgb, var(--accent) 90%, transparent);
+	color: #ffffff;
+	font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+	font-size: 15px;
+	line-height: 1.4;
+	white-space: nowrap;
+	pointer-events: none;
+	opacity: 0;
+	transition: opacity 0.5s ease-out;
+}
+
+.view-hint.visible {
+	opacity: 1;
+	transition-duration: 0.25s;
+}
+
+/* Per-view controls */
+.view-controls {
+	display: flex;
+	justify-content: center;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 15px;
+	margin-top: 15px;
+	padding: 12px 20px;
+	background: var(--panel);
+	border-radius: 8px;
+	max-width: var(--viewer-width);
+	width: 100%;
+	box-sizing: border-box;
+}
+
+.view-play {
+	background: var(--accent);
+	color: white;
+	border: none;
+	padding: 0;
+	width: 40px;
+	height: 34px;
+	border-radius: 5px;
+	cursor: pointer;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	flex-shrink: 0;
+	transition: background 0.2s;
+}
+
+/* Play triangle / pause bars, swapped by the .playing class */
+.view-play svg {
+	display: block;
+	fill: currentColor;
+}
+
+.view-play .icon-pause,
+.view-play.playing .icon-play {
+	display: none;
+}
+
+.view-play.playing .icon-pause {
+	display: block;
+}
+
+.view-play:hover {
+	background: var(--accent-hover);
+}
+
+.view-play:active {
+	background: var(--accent-active);
+}
+
+.view-timeline {
+	width: 200px;
+	flex-shrink: 1;
+}
+
+.view-frame {
+	font-family: monospace;
+	font-size: 12pt;
+	color: var(--label);
+	min-width: 35px;
+	white-space: nowrap;
+}
+
+.view-speed-control {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.view-speed-control label {
+	font-size: 11pt;
+	color: var(--label);
+}
+
+.view-fps {
+	width: 64px;
+	background: var(--input-bg);
+	color: var(--text-soft);
+	border: 1px solid var(--input-border);
+	border-radius: 4px;
+	padding: 4px 6px;
+	font-size: 11pt;
+}
+
+.view-fps:hover {
+	background: var(--input-bg-hover);
+}
+
+.view-fps:focus {
+	outline: none;
+	border-color: var(--accent);
+}
+
+/* View preset buttons - positioned above canvas with matching background */
+.view-buttons {
+	display: flex;
+	gap: 4px;
+	flex-wrap: wrap;
+	justify-content: center;
+	background: #ffffff;  /* Match the mesh viewer's white canvas for a seamless look */
+	padding: 8px 12px;
+	border-radius: 8px 8px 0 0;  /* Only top corners rounded */
+	max-width: var(--viewer-width);
+	width: 100%;
+	box-sizing: border-box;
+	margin-bottom: -1px;  /* Overlap canvas to prevent subpixel seam */
+	position: relative;
+	z-index: 1;
+}
+
+.volume-view-wrapper .view-buttons {
+	background: #000000;
+}
+
+.view-btn {
+	background: transparent;
+	color: var(--text-soft);
+	border: none;
+	padding: 4px;
+	font-size: 10pt;
+	border-radius: 4px;
+	cursor: pointer;
+	width: 34px;
+	height: 34px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	transition: background 0.2s;
+}
+
+.view-btn svg {
+	display: block;
+	width: 30px;
+	height: 30px;
+}
+
+.view-btn:hover {
+	background: rgba(0, 0, 0, 0.15);
+}
+
+.view-btn:active {
+	background: rgba(0, 0, 0, 0.25);
+}
+
+/* Dataset navigation: header bar above the viewer with prev/next arrows and the
+   dataset label beside them (eLife figure-supplement style) */
+.dataset-nav {
+	display: flex;
+	align-items: center;
+	justify-content: flex-start;
+	gap: 8px;
+	max-width: var(--viewer-width);
+	width: 100%;
+	box-sizing: border-box;
+	padding: 8px 12px;
+	margin-bottom: 6px;
+	background: var(--subtle-bg);
+	border: 1px solid var(--subtle-border);
+	border-radius: 8px;
+}
+
+.dataset-nav[hidden] {
+	display: none;
+}
+
+.dataset-prev,
+.dataset-next {
+	background: transparent;
+	color: var(--text-soft);
+	border: 1px solid var(--input-border);
+	border-radius: 4px;
+	width: 28px;
+	height: 28px;
+	font-size: 16pt;
+	line-height: 1;
+	padding: 0 0 3px 0;
+	cursor: pointer;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	transition: background 0.2s, color 0.2s;
+}
+
+.dataset-prev:hover:not(:disabled),
+.dataset-next:hover:not(:disabled) {
+	background: var(--subtle-border);
+	color: var(--text);
+}
+
+.dataset-prev:active:not(:disabled),
+.dataset-next:active:not(:disabled) {
+	background: var(--accent);
+	color: #fff;
+}
+
+/* Greyed out at the first / last dataset */
+.dataset-prev:disabled,
+.dataset-next:disabled {
+	color: var(--hint);
+	border-color: var(--subtle-border);
+	cursor: default;
+}
+
+.dataset-label {
+	font-size: 12pt;
+	font-weight: bold;
+	color: var(--text-soft);
+	margin-left: 6px;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+/* Per-view progress bar */
+.view-progress {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	margin-top: 10px;
+	padding: 8px 16px;
+	max-height: 60px;
+	background: var(--subtle-bg);
+	border-radius: 5px;
+	overflow: hidden;
+	box-sizing: border-box;
+	transition: opacity 0.3s ease-out;
+}
+
+/* Fade out, then collapse so the bar stops holding space below the controls */
+.view-progress.hidden {
+	opacity: 0;
+	pointer-events: none;
+	max-height: 0;
+	margin-top: 0;
+	padding-top: 0;
+	padding-bottom: 0;
+	transition: opacity 0.3s ease-out,
+		max-height 0.3s ease-out 0.3s,
+		margin-top 0.3s ease-out 0.3s,
+		padding 0.3s ease-out 0.3s;
+}
+
+.progress-label {
+	font-size: 11pt;
+	color: var(--faint);
+}
+
+.progress-bar-wrapper {
+	width: 120px;
+	height: 6px;
+	background: var(--track);
+	border-radius: 3px;
+	overflow: hidden;
+}
+
+.progress-bar {
+	height: 100%;
+	width: 0%;
+	background: linear-gradient(90deg, var(--accent), var(--accent-hover));
+	border-radius: 3px;
+	transition: width 0.1s ease-out;
+}
+
+.progress-text {
+	font-size: 11pt;
+	color: var(--faint);
+	min-width: 45px;
+}
+
+/* Volume view wrapper */
+.volume-view-wrapper {
+	margin: 40px 0;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+}
+
+/* Volume view element */
+.volume-view {
+	position: relative;  /* anchors the .view-hint overlay */
+	width: 100%;
+	max-width: var(--viewer-width);
+	height: var(--viewer-height);
+	margin: 0 auto;
+	display: block;
+	background: transparent;
+	pointer-events: auto;
+	border-radius: 0;  /* Remove rounding - cap provides it */
+	cursor: grab;
+}
+
+/* Bottom cap for viewers - provides rounded bottom corners */
+.view-bottom-cap {
+	background: #ffffff;  /* Match mesh viewer background */
+	height: 8px;
+	border-radius: 0 0 8px 8px;
+	max-width: var(--viewer-width);
+	width: 100%;
+	margin-top: -1px;  /* Overlap canvas to hide seam */
+	position: relative;
+	z-index: 1;
+}
+
+.volume-view-wrapper .view-bottom-cap {
+	background: #000000;  /* Match volume viewer background */
+}
+
+.volume-view:active {
+	cursor: grabbing;
+}
+
+/* Volume controls panel */
+.volume-controls {
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+	margin-top: 15px;
+	padding: 12px 20px;
+	background: var(--panel);
+	border-radius: 8px;
+	max-width: var(--viewer-width);
+	width: 100%;
+	box-sizing: border-box;
+}
+
+.volume-control-row {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	flex-wrap: wrap;
+}
+
+.volume-control-row label {
+	font-size: 11pt;
+	color: var(--label);
+	min-width: 70px;
+}
+
+.volume-control-row input[type="range"] {
+	flex: 1;
+	min-width: 100px;
+}
+
+/* Playback row: same layout as the mesh viewer's .view-controls
+   (play button, fixed-width timeline, frame counter, FPS box, centred) */
+.volume-playback-row {
+	justify-content: center;
+	gap: 15px;
+}
+
+.volume-playback-row .view-timeline {
+	flex: 0 1 auto;
+	width: 200px;
+}
+
+.volume-playback-row .view-speed-control label {
+	min-width: 0;
+}
+
+.volume-contrast-value,
+.volume-gamma-value {
+	font-size: 12pt;
+	color: var(--label);
+	min-width: 45px;
+	text-align: right;
+}
+
+.volume-contrast-value {
+	min-width: 70px;
+}
+
+/* Dual-handle range slider (contrast limits) */
+.range-slider {
+	position: relative;
+	flex: 1;
+	min-width: 100px;
+	height: 20px;
+}
+
+.range-slider-track,
+.range-slider-fill {
+	position: absolute;
+	top: 50%;
+	height: 4px;
+	transform: translateY(-50%);
+	border-radius: 2px;
+	pointer-events: none;
+}
+
+.range-slider-track {
+	left: 0;
+	right: 0;
+	background: var(--track-strong);
+}
+
+.range-slider-fill {
+	background: var(--accent);
+}
+
+.range-slider input[type="range"] {
+	position: absolute;
+	left: 0;
+	top: 0;
+	width: 100%;
+	height: 100%;
+	margin: 0;
+	background: transparent;
+	pointer-events: none;
+	-webkit-appearance: none;
+	appearance: none;
+}
+
+.range-slider input[type="range"]:focus {
+	outline: none;
+}
+
+.range-slider input[type="range"]::-webkit-slider-runnable-track {
+	background: transparent;
+	height: 100%;
+}
+
+.range-slider input[type="range"]::-moz-range-track {
+	background: transparent;
+	height: 100%;
+}
+
+.range-slider input[type="range"]::-webkit-slider-thumb {
+	-webkit-appearance: none;
+	appearance: none;
+	pointer-events: auto;
+	width: 14px;
+	height: 14px;
+	margin-top: 3px;
+	border-radius: 50%;
+	background: var(--thumb);
+	border: 1px solid var(--thumb-border);
+	cursor: pointer;
+}
+
+.range-slider input[type="range"]::-moz-range-thumb {
+	pointer-events: auto;
+	width: 14px;
+	height: 14px;
+	border-radius: 50%;
+	background: var(--thumb);
+	border: 1px solid var(--thumb-border);
+	cursor: pointer;
+}
+
+.range-slider input[type="range"]:focus::-webkit-slider-thumb {
+	border-color: var(--accent);
+}
+
+.range-slider input[type="range"]:focus::-moz-range-thumb {
+	border-color: var(--accent);
+}
+
+/* The max handle sits on top by default; swap when the min handle is being dragged */
+.range-slider .volume-contrast-max {
+	z-index: 2;
+}
+
+.range-slider .volume-contrast-min {
+	z-index: 3;
+}
+
+.range-slider.max-active .volume-contrast-max {
+	z-index: 3;
+}
+
+.range-slider.max-active .volume-contrast-min {
+	z-index: 2;
+}
+
+/* Responsive adjustments */
+@media (max-width: 700px) {
+	:root {
+		--viewer-height: 300px;
+	}
+
+	.view-controls,
+	.volume-controls {
+		gap: 10px;
+		padding: 10px 15px;
+	}
+
+	/* The slider takes whatever width is left beside the play button and counter */
+	.view-timeline,
+	.volume-playback-row .view-timeline {
+		flex: 1 1 120px;
+		width: auto;
+		min-width: 100px;
+	}
+
+	.view-speed-control {
+		width: 100%;
+		justify-content: center;
+	}
+
+	.view-buttons {
+		padding: 6px 8px;
+	}
+
+	.view-btn {
+		width: 30px;
+		height: 30px;
+	}
+
+	.view-btn svg {
+		width: 26px;
+		height: 26px;
+	}
+
+	.volume-control-row {
+		justify-content: center;
+	}
+
+	.volume-control-row label {
+		min-width: 60px;
+	}
+}

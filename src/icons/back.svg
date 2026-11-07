@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" version="1.1" viewBox="0 0 26 26">
+  <defs>
+    <style>
+      .icon-back-st0 {
+        fill: var(--icon-face);
+        opacity: .8;
+      }
+
+      .icon-back-st0, .icon-back-st1, .icon-back-st2, .icon-back-st3, .icon-back-st4 {
+        stroke: #777b7e;
+        stroke-linejoin: round;
+        stroke-width: 2px;
+      }
+
+      .icon-back-st1, .icon-back-st2, .icon-back-st3, .icon-back-st4 {
+        fill: none;
+      }
+
+      .icon-back-st2 {
+        opacity: .8;
+      }
+
+      .icon-back-st2, .icon-back-st3, .icon-back-st4 {
+        stroke-linecap: round;
+      }
+
+      .icon-back-st2, .icon-back-st4 {
+        isolation: isolate;
+      }
+    </style>
+  </defs>
+  <rect class="icon-back-st0" x="8" y="2" width="16" height="16"/>
+  <rect class="icon-back-st1" x="8" y="2" width="16" height="16"/>
+  <path class="icon-back-st3" d="M2,24V8l6-6v16l-6,6Z"/>
+  <path class="icon-back-st2" d="M2,24l6-6h16l-6,6H2Z"/>
+  <path class="icon-back-st4" d="M2,8l6-6h16l-6,6H2Z"/>
+  <path class="icon-back-st3" d="M18,24V8l6-6v16l-6,6Z"/>
+  <rect class="icon-back-st1" x="2" y="8" width="16" height="16"/>
+</svg>

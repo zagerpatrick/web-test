@@ -2,6 +2,9 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
 
+// Largest share of a view's smaller side the orientation marker may occupy
+const MARKER_MAX_FRACTION = 0.36;
+
 /**
  * SharedRenderer - Singleton managing WebGLRenderer and scissor-based multi-scene render loop
  *
@@ -162,11 +165,12 @@ class SharedRenderer {
 			const viewWidth = rect.width;
 			const viewHeight = rect.height;
 
-			// Update camera aspect ratio if needed
+			// Update camera aspect ratio if needed, telling the view so it can refit
 			const aspect = viewWidth / viewHeight;
 			if (view.camera.aspect !== aspect) {
 				view.camera.aspect = aspect;
 				view.camera.updateProjectionMatrix();
+				if (typeof view.onViewResized === 'function') view.onViewResized();
 			}
 
 			// Update controls
@@ -182,7 +186,8 @@ class SharedRenderer {
 			// Render orientation marker in bottom-left corner
 			if (view.orientationMarker && view.orientationMarker.isVisible()) {
 				const marker = view.orientationMarker;
-				const markerSize = marker.getSize();
+				// Never let the marker take more than about a third of a small view
+				const markerSize = Math.min(marker.getSize(), Math.floor(Math.min(viewWidth, viewHeight) * MARKER_MAX_FRACTION));
 				const padding = 10;
 
 				// Position in bottom-left corner of this view's region

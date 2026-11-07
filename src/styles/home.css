@@ -1,0 +1,159 @@
+/* Home page layout and typography. Colours come from the theme tokens in viewer.css. */
+:root {
+	--header-width: 860px;   /* header column, a little wider than the content */
+	--page-width: 800px;     /* content column (viewer and project cards) */
+	--page-gutter: 20px;     /* side padding on narrow screens */
+}
+
+body {
+	font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+.site-header {
+        display: flex;
+        justify-content: space-between;  /* name left, links right */
+        align-items: center;             /* centre both vertically */
+        height: 70px;
+        max-width: var(--header-width);    /* same column as main */
+        margin: 0 auto;
+        padding: 0 var(--page-gutter);
+}
+
+.site-header a {
+        color: var(--text);
+        text-decoration: none;
+}
+
+.site-header a:hover {
+        color: var(--muted);
+}
+
+.site-name {
+        font-size: 28px;
+}
+
+.site-nav {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        list-style: none;  /* no bullets */
+        margin: 0;
+        padding: 0;
+        font-size: 26px;
+        letter-spacing: 0.02em;
+}
+
+.home {
+	max-width: var(--page-width);
+	margin: 0 auto;
+	padding: 0px var(--page-gutter);
+	position: relative;
+	z-index: 1;
+}
+
+/* Hero viewer above the project list: as wide as the content column, taller than
+   the default viewer, with the camera fitted 25% closer than the scene would
+   otherwise be (a little less on phones). The viewer parts themselves are styled
+   in viewer.css and read these tokens. */
+.home-viewer {
+	--viewer-width: var(--page-width);
+	--viewer-height: 500px;
+	--viewer-zoom: 1.25;
+	margin: 0 0 10px;
+}
+
+@media (max-width: 700px) {
+	.home-viewer {
+		--viewer-height: 320px;
+		--viewer-zoom: 1.05;
+	}
+}
+
+.project-list {
+	display: grid;
+	gap: 20px;
+}
+
+.project-card {
+	display: block;
+	padding: 24px 28px;
+	background: var(--panel);
+	border-radius: 8px;
+	border-left: 8px solid var(--accent);
+	color: inherit;
+	text-decoration: none;
+	transition: background 0.2s, transform 0.2s;
+}
+
+.project-card:hover {
+	background: var(--panel-hover);
+	transform: translateY(-2px);
+}
+
+.project-card:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 3px;
+}
+
+.project-card h2 {
+	font-size: 20px;
+	color: var(--text);
+	margin: 0 0 10px;
+}
+
+.project-card p {
+	font-size: 16px;
+	line-height: 1.6;
+	color: var(--text-soft);
+	margin: 0 0 16px;
+}
+
+.project-link {
+	font-size: 15px;
+	font-weight: 600;
+	color: var(--accent);
+}
+
+.project-card:hover .project-link {
+	color: var(--accent-hover);
+}
+
+/* Narrow screens: smaller header, less vertical padding, tighter cards */
+@media (max-width: 700px) {
+	.site-header {
+		height: auto;
+		min-height: 56px;
+		padding: 12px var(--page-gutter);
+		gap: 12px;
+		flex-wrap: wrap;
+	}
+
+	.site-name {
+		font-size: 20px;
+	}
+
+	.site-nav {
+		font-size: 17px;
+		gap: 14px;
+	}
+
+	.home {
+		padding: 16px var(--page-gutter) 32px;
+	}
+
+	.home-viewer {
+		margin-bottom: 28px;
+	}
+
+	.project-card {
+		padding: 18px 20px;
+	}
+
+	.project-card h2 {
+		font-size: 20px;
+	}
+
+	.project-card p {
+		font-size: 15px;
+	}
+}

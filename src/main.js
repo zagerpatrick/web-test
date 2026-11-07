@@ -1,21 +1,23 @@
 import sharedRenderer from './js/SharedRenderer.js';
 import MeshTimeseriesView from './js/MeshTimeseriesView.js';
 import VolumeTimeseriesView from './js/VolumeTimeseriesView.js';
+import { initThemeToggle } from './js/theme.js';
 
 /**
  * Main orchestration layer
  * Initializes the shared renderer and auto-wires views from data attributes
  */
 
-// Store references to all views
-const meshViews = [];
-const volumeViews = [];
+// The view under the pointer, which the keyboard shortcuts act on
 let focusedView = null;
 
 /**
  * Initialize the application
  */
 function init() {
+	// Dark / light theme switch (the theme itself is applied from the <head>)
+	initThemeToggle();
+
 	// Initialize shared renderer with the full-page canvas
 	const canvas = document.querySelector('#c');
 	sharedRenderer.init(canvas);
@@ -47,19 +49,39 @@ function init() {
  * @returns {Object[]} At least one dataset
  */
 function readDatasets(wrapper, defaults) {
-	const raw = wrapper?.dataset.datasets;
-	if (raw) {
-		try {
-			const list = JSON.parse(raw);
-			if (Array.isArray(list) && list.length > 0) {
-				return list.map((ds) => ({ ...defaults, ...ds }));
-			}
-			console.warn('data-datasets must be a non-empty JSON array; using the view element attributes instead');
-		} catch (error) {
-			console.error('Invalid JSON in data-datasets:', error);
-		}
+	const list = readJsonList(wrapper?.dataset.datasets, 'data-datasets', () => true);
+	return list ? list.map((ds) => ({ ...defaults, ...ds })) : [{ ...defaults }];
+}
+
+/**
+ * Parse a data attribute holding a non-empty JSON array whose entries all pass
+ * `isValid`; problems are logged and give null so the caller can fall back.
+ * @param {string|undefined} raw - Attribute value
+ * @param {string} attrName - For the log messages
+ * @param {Function} isValid - Predicate applied to each entry
+ * @returns {Object[]|null}
+ */
+function readJsonList(raw, attrName, isValid) {
+	if (!raw) return null;
+	try {
+		const list = JSON.parse(raw);
+		if (Array.isArray(list) && list.length > 0 && list.every(isValid)) return list;
+		console.warn(`${attrName} must be a non-empty JSON array of valid entries; ignoring it`);
+	} catch (error) {
+		console.error(`Invalid JSON in ${attrName}:`, error);
 	}
-	return [{ ...defaults }];
+	return null;
+}
+
+/**
+ * A numeric data attribute, or undefined when absent or not a number
+ * @param {HTMLElement} elem
+ * @param {string} name - camelCase dataset key (data-coverslip-size -> coverslipSize)
+ * @returns {number|undefined}
+ */
+function numberAttr(elem, name) {
+	const value = parseFloat(elem.dataset[name]);
+	return Number.isFinite(value) ? value : undefined;
 }
 
 /**
@@ -138,6 +160,14 @@ const VIEW_PRESETS = [
 ];
 
 /**
+ * Camera-preset icons, bundled as markup at build time and inlined into the
+ * buttons so their cube faces can use the `--icon-face*` theme tokens (the
+ * files in `src/icons/` reference the tokens directly and carry icon-specific
+ * class names, so several inlined icons coexist on one page).
+ */
+const ICONS = import.meta.glob('./icons/*.svg', { query: '?raw', import: 'default', eager: true });
+
+/**
  * Fill the `.view-buttons` bar of one viewer with a button per camera preset
  * and wire each to `view.setView()`. Any buttons already present in the markup
  * are kept and wired instead of being rebuilt.
@@ -154,14 +184,8 @@ function wireViewButtons(wrapper, view) {
 			btn.className = 'view-btn';
 			btn.dataset.view = id;
 			btn.title = label;
-
-			const icon = document.createElement('img');
-			icon.src = `icons/${id}.svg`;
-			icon.width = 30;
-			icon.height = 30;
-			icon.alt = `${label} view`;
-
-			btn.appendChild(icon);
+			btn.setAttribute('aria-label', `${label} view`);
+			btn.innerHTML = ICONS[`./icons/${id}.svg`] ?? label[0];
 			container.appendChild(btn);
 		}
 	}
@@ -169,6 +193,25 @@ function wireViewButtons(wrapper, view) {
 	container.querySelectorAll('.view-btn').forEach((btn) => {
 		btn.addEventListener('click', () => view.setView(btn.dataset.view));
 	});
+}
+
+// How long the controls hint stays up after the pointer enters a view
+const VIEW_HINT_DURATION_MS = 8000;
+
+/**
+ * Fade in a view's `.view-hint` overlay the first time the pointer enters the
+ * view, and fade it out VIEW_HINT_DURATION_MS later. Later hovers show nothing.
+ * Does nothing for views without a hint element.
+ * @param {HTMLElement} elem - The .mesh-view / .volume-view element
+ */
+function wireViewHint(elem) {
+	const hint = elem.querySelector('.view-hint');
+	if (!hint) return;
+
+	elem.addEventListener('mouseenter', () => {
+		hint.classList.add('visible');
+		setTimeout(() => hint.classList.remove('visible'), VIEW_HINT_DURATION_MS);
+	}, { once: true });
 }
 
 /**
@@ -185,19 +228,133 @@ function setPlayButton(playBtn, isPlaying) {
 }
 
 /**
- * Put the playback and loading controls back to their pre-load state so the
- * progress of a newly selected dataset is shown from zero.
+ * Text for the frame counter: the zero-padded frame index, or, when the view
+ * declares how many seconds one frame spans (`data-frame-interval`), the elapsed
+ * time as `MMm SSs` counted from 0 at the first frame.
+ * @param {number} frameIndex
+ * @param {number|undefined} frameInterval - Seconds per frame, or undefined for a plain index
+ * @returns {string}
  */
-function resetLoadUi({ playBtn, timeline, frameSpan, progressBar, progressText, progressContainer }) {
-	setPlayButton(playBtn, false);
-	if (timeline) {
-		timeline.max = 0;
-		timeline.value = 0;
-	}
-	if (frameSpan) frameSpan.textContent = '000';
-	if (progressBar) progressBar.style.width = '0%';
-	if (progressText) progressText.textContent = '0/…';
-	if (progressContainer) progressContainer.classList.remove('hidden');
+function formatFrame(frameIndex, frameInterval) {
+	if (!(frameInterval > 0)) return String(frameIndex).padStart(3, '0');
+	const totalSeconds = Math.round(frameIndex * frameInterval);
+	const minutes = Math.floor(totalSeconds / 60);
+	const seconds = totalSeconds % 60;
+	return `${String(minutes).padStart(2, '0')}m ${String(seconds).padStart(2, '0')}s`;
+}
+
+/**
+ * Look up the playback and loading controls of one viewer wrapper and build the
+ * pieces shared by mesh and volume views: the load / frame callbacks for the
+ * view options, a reset for dataset switches, and the control wiring.
+ *
+ * Attributes read from the view element: `data-frame-interval` (seconds per
+ * frame; the counter then shows elapsed time, see formatFrame) and
+ * `data-autoplay="true"` (start playback once every file has loaded).
+ * @param {HTMLElement} wrapper - The .mesh-view-wrapper / .volume-view-wrapper
+ * @param {HTMLElement} elem - The .mesh-view / .volume-view element
+ */
+function setupPlaybackUi(wrapper, elem) {
+	const playBtn = wrapper.querySelector('.view-play');
+	const timeline = wrapper.querySelector('.view-timeline');
+	const frameSpan = wrapper.querySelector('.view-frame');
+	const fpsInput = wrapper.querySelector('.view-fps');
+	const progressBar = wrapper.querySelector('.progress-bar');
+	const progressText = wrapper.querySelector('.progress-text');
+	const progressContainer = wrapper.querySelector('.view-progress');
+	const frameInterval = numberAttr(elem, 'frameInterval');
+	const autoplay = elem.dataset.autoplay === 'true';
+	let view = null;
+
+	const ui = {
+		/**
+		 * Size the timeline and the progress total once the frame count is known
+		 * @param {number} count
+		 */
+		setFrameCount(count) {
+			if (timeline) timeline.max = Math.max(count - 1, 0);
+			if (progressText) progressText.textContent = `0/${count}`;
+		},
+
+		/**
+		 * Put the controls back to their pre-load state so the progress of a
+		 * newly selected dataset is shown from zero
+		 */
+		reset() {
+			setPlayButton(playBtn, false);
+			if (timeline) {
+				timeline.max = 0;
+				timeline.value = 0;
+			}
+			if (frameSpan) frameSpan.textContent = formatFrame(0, frameInterval);
+			if (progressBar) progressBar.style.width = '0%';
+			if (progressText) progressText.textContent = '0/…';
+			if (progressContainer) progressContainer.classList.remove('hidden');
+		},
+
+		/** View options: spread into the view constructor */
+		callbacks: {
+			onLoadProgress: (loaded, total) => {
+				const percent = Math.round((loaded / total) * 100);
+				if (progressBar) progressBar.style.width = `${percent}%`;
+				if (progressText) progressText.textContent = `${loaded}/${total}`;
+			},
+			onLoadComplete: () => {
+				// Fade out progress bar when done
+				if (progressContainer) progressContainer.classList.add('hidden');
+				// Autoplay once everything is in memory (also after a dataset switch)
+				if (autoplay && view) {
+					view.play();
+					setPlayButton(playBtn, true);
+				}
+			},
+			onFrameChange: (frameIndex, isLoaded) => {
+				if (timeline) timeline.value = frameIndex;
+				if (frameSpan) {
+					frameSpan.textContent = formatFrame(frameIndex, frameInterval) + (isLoaded ? '' : '...');
+				}
+			}
+		},
+
+		/**
+		 * Attach the controls to the constructed view
+		 * @param {Object} constructedView - A MeshTimeseriesView or VolumeTimeseriesView
+		 */
+		wire(constructedView) {
+			view = constructedView;
+
+			if (playBtn) {
+				playBtn.addEventListener('click', () => {
+					setPlayButton(playBtn, view.togglePlay());
+				});
+			}
+
+			if (timeline) {
+				timeline.addEventListener('input', () => {
+					view.pause();
+					view.setFrame(parseInt(timeline.value));
+					setPlayButton(playBtn, false);
+				});
+			}
+
+			if (fpsInput) wireFpsInput(fpsInput, view);
+
+			wireViewButtons(wrapper, view);
+			wireViewHint(elem);
+
+			// Track the view under the pointer for the keyboard shortcuts
+			elem.addEventListener('mouseenter', () => {
+				focusedView = { view, playBtn };
+			});
+			elem.addEventListener('mouseleave', () => {
+				if (focusedView?.view === view) focusedView = null;
+			});
+		}
+	};
+
+	// The markup's initial counter / progress text need not match the attributes
+	ui.reset();
+	return ui;
 }
 
 /**
@@ -211,24 +368,29 @@ function initMeshViews() {
 		// (if any) overrides them per dataset. data-meshcount and data-startindex are
 		// optional: when omitted the view discovers the numbering origin and the file
 		// count from the server. The coverslip attributes (data-coverslip="false",
-		// data-coverslip-size, data-coverslip-opacity) apply to the whole view.
+		// data-coverslip-size, data-coverslip-opacity) apply to the whole view, as does
+		// data-center="false", which keeps the meshes at their absolute positions
+		// instead of centring the first frame on the coverslip, and data-rotation
+		// (degrees, counterclockwise from above) which turns meshes and coverslip
+		// about the vertical axis. In that mode data-coverslip-scale sizes the slab
+		// relative to the scene footprint. data-axes-size sets the orientation
+		// marker size in pixels (default 120). The camera zoom comes from the
+		// --viewer-zoom CSS custom property on the view element. Playback
+		// attributes (data-autoplay, data-frame-interval) are read by setupPlaybackUi.
 		const datasets = readDatasets(wrapper, {
 			basePath: elem.dataset.basepath || 'data/meshes/mesh',
-			meshCount: elem.dataset.meshcount ? parseInt(elem.dataset.meshcount, 10) : undefined,
-			startIndex: elem.dataset.startindex ? parseInt(elem.dataset.startindex, 10) : undefined,
+			meshCount: numberAttr(elem, 'meshcount'),
+			startIndex: numberAttr(elem, 'startindex'),
 			vertexColors: elem.dataset.vertexcolors === 'true'
 		});
+		// data-sequences on the view element renders several sequences at once in
+		// the single (implicit) dataset; a data-datasets entry can carry its own
+		// `sequences` list instead of a basePath.
+		const sequences = readJsonList(elem.dataset.sequences, 'data-sequences', (seq) => seq && typeof seq.basePath === 'string');
+		if (sequences && !wrapper?.dataset.datasets) datasets[0].sequences = sequences;
 		const first = datasets[0];
 
-		// Get control elements
-		const playBtn = wrapper.querySelector('.view-play');
-		const timeline = wrapper.querySelector('.view-timeline');
-		const frameSpan = wrapper.querySelector('.view-frame');
-		const fpsInput = wrapper.querySelector('.view-fps');
-		const progressBar = wrapper.querySelector('.progress-bar');
-		const progressText = wrapper.querySelector('.progress-text');
-		const progressContainer = wrapper.querySelector('.view-progress');
-		const loadUi = { playBtn, timeline, frameSpan, progressBar, progressText, progressContainer };
+		const ui = setupPlaybackUi(wrapper, elem);
 
 		// Create the view
 		const view = new MeshTimeseriesView({
@@ -236,85 +398,34 @@ function initMeshViews() {
 			basePath: first.basePath,
 			meshCount: first.meshCount,
 			startIndex: first.startIndex,
+			sequences: first.sequences,
+			centerFrames: elem.dataset.center !== 'false',
+			sceneRotation: numberAttr(elem, 'rotation'),
+			coverslipScale: numberAttr(elem, 'coverslipScale'),
+			axesSize: numberAttr(elem, 'axesSize'),
 			enableControls: true,
 			useVertexColors: !!first.vertexColors,
 			showCoverslip: elem.dataset.coverslip !== 'false',
-			coverslipSize: elem.dataset.coverslipSize ? parseFloat(elem.dataset.coverslipSize) : undefined,
-			coverslipOpacity: elem.dataset.coverslipOpacity ? parseFloat(elem.dataset.coverslipOpacity) : undefined,
-			onCountResolved: (count) => {
-				// Timeline range and progress total follow the resolved count
-				if (timeline) timeline.max = Math.max(count - 1, 0);
-				if (progressText) progressText.textContent = `0/${count}`;
-			},
-			onLoadProgress: (loaded, total) => {
-				const percent = Math.round((loaded / total) * 100);
-				if (progressBar) progressBar.style.width = `${percent}%`;
-				if (progressText) progressText.textContent = `${loaded}/${total}`;
-			},
-			onLoadComplete: () => {
-				// Fade out progress bar when done
-				if (progressContainer) {
-					progressContainer.classList.add('hidden');
-				}
-			},
-			onFrameChange: (frameIndex, isLoaded) => {
-				if (timeline) timeline.value = frameIndex;
-				if (frameSpan) {
-					frameSpan.textContent = String(frameIndex).padStart(3, '0') +
-						(isLoaded ? '' : '...');
-				}
-			}
+			coverslipSize: numberAttr(elem, 'coverslipSize'),
+			coverslipOpacity: numberAttr(elem, 'coverslipOpacity'),
+			// Timeline range and progress total follow the resolved count
+			onCountResolved: (count) => ui.setFrameCount(count),
+			...ui.callbacks
 		});
 
 		// Wire up dataset arrows (no-op with a single dataset)
 		wireDatasetNav(wrapper, datasets, (ds) => {
-			resetLoadUi(loadUi);
+			ui.reset();
 			view.setDataset({
 				basePath: ds.basePath,
 				meshCount: ds.meshCount,
 				startIndex: ds.startIndex,
+				sequences: ds.sequences,
 				useVertexColors: !!ds.vertexColors
 			});
 		});
 
-		// Wire up play button
-		if (playBtn) {
-			playBtn.addEventListener('click', () => {
-				const isPlaying = view.togglePlay();
-				setPlayButton(playBtn, isPlaying);
-			});
-		}
-
-		// Wire up timeline slider
-		if (timeline) {
-			timeline.addEventListener('input', () => {
-				view.pause();
-				view.setFrame(parseInt(timeline.value));
-				setPlayButton(playBtn, false);
-			});
-		}
-
-		// Wire up frames-per-second number box
-		if (fpsInput) {
-			wireFpsInput(fpsInput, view);
-		}
-
-		// Wire up view preset buttons
-		wireViewButtons(wrapper, view);
-
-		// Track focus for keyboard controls
-		elem.addEventListener('mouseenter', () => {
-			focusedView = { view, playBtn };
-		});
-
-		elem.addEventListener('mouseleave', () => {
-			if (focusedView?.view === view) {
-				focusedView = null;
-			}
-		});
-
-		// Store view reference
-		meshViews.push({ view, playBtn, timeline, frameSpan });
+		ui.wire(view);
 	});
 }
 
@@ -334,15 +445,7 @@ function initVolumeViews() {
 		});
 		const first = datasets[0];
 
-		// Get control elements
-		const playBtn = wrapper.querySelector('.view-play');
-		const timeline = wrapper.querySelector('.view-timeline');
-		const frameSpan = wrapper.querySelector('.view-frame');
-		const fpsInput = wrapper.querySelector('.view-fps');
-		const progressBar = wrapper.querySelector('.progress-bar');
-		const progressText = wrapper.querySelector('.progress-text');
-		const progressContainer = wrapper.querySelector('.view-progress');
-		const loadUi = { playBtn, timeline, frameSpan, progressBar, progressText, progressContainer };
+		const ui = setupPlaybackUi(wrapper, elem);
 
 		// Volume-specific controls
 		const contrastSlider = wrapper.querySelector('.volume-contrast');
@@ -383,57 +486,11 @@ function initVolumeViews() {
 			gamma: initialGamma,
 			stepCount: 512,
 			showCoverslip: elem.dataset.coverslip !== 'false',
-			coverslipOpacity: elem.dataset.coverslipOpacity ? parseFloat(elem.dataset.coverslipOpacity) : undefined,
-			onMetadataLoaded: (metadata) => {
-				// Update timeline max based on frame count
-				if (timeline) {
-					timeline.max = metadata.frameCount - 1;
-				}
-				if (progressText) {
-					progressText.textContent = `0/${metadata.frameCount}`;
-				}
-			},
-			onLoadProgress: (loaded, total) => {
-				const percent = Math.round((loaded / total) * 100);
-				if (progressBar) progressBar.style.width = `${percent}%`;
-				if (progressText) progressText.textContent = `${loaded}/${total}`;
-			},
-			onLoadComplete: () => {
-				// Fade out progress bar when done
-				if (progressContainer) {
-					progressContainer.classList.add('hidden');
-				}
-			},
-			onFrameChange: (frameIndex, isLoaded) => {
-				if (timeline) timeline.value = frameIndex;
-				if (frameSpan) {
-					frameSpan.textContent = String(frameIndex).padStart(3, '0') +
-						(isLoaded ? '' : '...');
-				}
-			}
+			coverslipOpacity: numberAttr(elem, 'coverslipOpacity'),
+			// Timeline range and progress total follow the metadata frame count
+			onMetadataLoaded: (metadata) => ui.setFrameCount(metadata.frameCount),
+			...ui.callbacks
 		});
-
-		// Wire up play button
-		if (playBtn) {
-			playBtn.addEventListener('click', () => {
-				const isPlaying = view.togglePlay();
-				setPlayButton(playBtn, isPlaying);
-			});
-		}
-
-		// Wire up timeline slider
-		if (timeline) {
-			timeline.addEventListener('input', () => {
-				view.pause();
-				view.setFrame(parseInt(timeline.value));
-				setPlayButton(playBtn, false);
-			});
-		}
-
-		// Wire up frames-per-second number box
-		if (fpsInput) {
-			wireFpsInput(fpsInput, view);
-		}
 
 		// Wire up contrast limits (dual-handle slider, ImageJ / napari style)
 		let applyContrast = null;
@@ -481,29 +538,14 @@ function initVolumeViews() {
 
 		// Wire up dataset arrows (no-op with a single dataset)
 		wireDatasetNav(wrapper, datasets, (ds) => {
-			resetLoadUi(loadUi);
+			ui.reset();
 			applyDatasetPresets(ds);
 			if (applyContrast) applyContrast(contrastMaxSlider);
 			if (applyGamma) applyGamma();
 			view.setDataset({ basePath: ds.basePath });
 		});
 
-		// Wire up view preset buttons
-		wireViewButtons(wrapper, view);
-
-		// Track focus for keyboard controls
-		elem.addEventListener('mouseenter', () => {
-			focusedView = { view, playBtn };
-		});
-
-		elem.addEventListener('mouseleave', () => {
-			if (focusedView?.view === view) {
-				focusedView = null;
-			}
-		});
-
-		// Store view reference
-		volumeViews.push({ view, playBtn, timeline, frameSpan });
+		ui.wire(view);
 	});
 }
 
