@@ -178,7 +178,8 @@ input[type="range"] {
 
 /* Controls hint overlaid on a view: a `.view-hint` child of a .mesh-view or
    .volume-view (both position: relative) is faded in by main.js the first time
-   the pointer enters the view and out again a few seconds later. It never takes
+   the pointer enters the view, or a finger touches it, and out again a few
+   seconds later. It never takes
    pointer events, so the trackball controls underneath are unaffected. */
 .view-hint {
 	position: absolute;
@@ -209,6 +210,13 @@ input[type="range"] {
 .view-hint.visible {
 	opacity: 1;
 	transition-duration: 0.25s;
+}
+
+/* Lines for one kind of input: main.js adds .touch when the hint is raised by a
+   finger, which swaps the mouse / keyboard lines for the touch gestures */
+.view-hint:not(.touch) .hint-touch,
+.view-hint.touch .hint-mouse {
+	display: none;
 }
 
 /* Per-view controls */
@@ -290,8 +298,9 @@ input[type="range"] {
 	color: var(--label);
 }
 
+/* Whole numbers from 1 to 60: room for two digits plus the desktop spinner */
 .view-fps {
-	width: 64px;
+	width: 36px;
 	background: var(--input-bg);
 	color: var(--text-soft);
 	border: 1px solid var(--input-border);
@@ -702,17 +711,41 @@ input[type="range"] {
 		padding: 10px 15px;
 	}
 
-	/* The slider takes whatever width is left beside the play button and counter */
+	/* One row, as on desktop: the slider takes whatever width is left between
+	   the play button and the counter / FPS box (which wraps only on screens
+	   too narrow to leave the slider a usable length) */
 	.view-timeline,
 	.volume-playback-row .view-timeline {
-		flex: 1 1 120px;
+		flex: 1 1 60px;
 		width: auto;
-		min-width: 100px;
+		min-width: 60px;
 	}
 
 	.view-speed-control {
-		width: 100%;
-		justify-content: center;
+		gap: 6px;
+	}
+
+	/* No space in the time readout ("00m00s"): in a monospace font the space is
+	   exactly 1ch wide, so this closes it up and the slider gets that width */
+	.view-frame {
+		word-spacing: -1ch;
+	}
+
+	/* Just wide enough for two digits, with no spinner arrows (phones show none
+	   anyway). 16px text keeps iOS from zooming the page in on focus. */
+	.view-fps {
+		width: 2.5ch;
+		padding: 4px;
+		font-size: 16px;
+		text-align: center;
+		-moz-appearance: textfield;
+		appearance: textfield;
+	}
+
+	.view-fps::-webkit-inner-spin-button,
+	.view-fps::-webkit-outer-spin-button {
+		-webkit-appearance: none;
+		margin: 0;
 	}
 
 	.view-buttons {

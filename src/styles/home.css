@@ -63,9 +63,12 @@ body {
 }
 
 @media (max-width: 700px) {
+	/* Phones: the viewer is as wide as the screen, so size its height from the
+	   width to match the coverslip's proportions. A fixed height left empty
+	   bands above and below the cells. */
 	.home-viewer {
-		--viewer-height: 320px;
-		--viewer-zoom: 1.05;
+		--viewer-height: max(220px, calc((100vw - 2 * var(--page-gutter)) * 0.72));
+		--viewer-zoom: 1.2;
 	}
 }
 
@@ -118,42 +121,60 @@ body {
 	color: var(--accent-hover);
 }
 
-/* Narrow screens: smaller header, less vertical padding, tighter cards */
+/* Narrow screens: same one-row header and tight vertical rhythm as the desktop
+   layout, just smaller type and cards */
 @media (max-width: 700px) {
 	.site-header {
-		height: auto;
-		min-height: 56px;
-		padding: 12px var(--page-gutter);
-		gap: 12px;
-		flex-wrap: wrap;
+		height: 56px;
+		padding: 0 var(--page-gutter);
+		gap: 10px;
+		flex-wrap: nowrap;
 	}
 
 	.site-name {
-		font-size: 20px;
+		font-size: 18px;
+		white-space: nowrap;
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
 	}
 
 	.site-nav {
-		font-size: 17px;
-		gap: 14px;
+		font-size: 16px;
+		gap: 12px;
+		flex-shrink: 0;
+	}
+
+	.site-nav a {
+		white-space: nowrap;
 	}
 
 	.home {
-		padding: 16px var(--page-gutter) 32px;
+		padding: 0 var(--page-gutter) 24px;
 	}
 
 	.home-viewer {
-		margin-bottom: 28px;
+		margin-bottom: 4px;
+	}
+
+	.home-viewer .view-controls {
+		margin-top: 10px;
+	}
+
+	.project-list {
+		gap: 14px;
 	}
 
 	.project-card {
-		padding: 18px 20px;
+		padding: 16px 18px;
 	}
 
 	.project-card h2 {
-		font-size: 20px;
+		font-size: 18px;
 	}
 
 	.project-card p {
 		font-size: 15px;
+		margin-bottom: 12px;
 	}
 }

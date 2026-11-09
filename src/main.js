@@ -195,12 +195,17 @@ function wireViewButtons(wrapper, view) {
 	});
 }
 
-// How long the controls hint stays up after the pointer enters a view
+// How long the controls hint stays up after the pointer enters a view, and
+// after the first touch (shorter: it sits over what the finger is dragging)
 const VIEW_HINT_DURATION_MS = 8000;
+const VIEW_HINT_TOUCH_DURATION_MS = 4000;
 
 /**
- * Fade in a view's `.view-hint` overlay the first time the pointer enters the
- * view, and fade it out VIEW_HINT_DURATION_MS later. Later hovers show nothing.
+ * Fade in a view's `.view-hint` overlay the first time the view is used - when
+ * the mouse pointer enters it, or when a finger first touches it - and fade it
+ * out a few seconds later. Later hovers and touches show nothing. A touch adds
+ * the `touch` class, which swaps the mouse / keyboard lines for the touch
+ * gestures (see .hint-mouse / .hint-touch in viewer.css).
  * Does nothing for views without a hint element.
  * @param {HTMLElement} elem - The .mesh-view / .volume-view element
  */
@@ -208,10 +213,23 @@ function wireViewHint(elem) {
 	const hint = elem.querySelector('.view-hint');
 	if (!hint) return;
 
-	elem.addEventListener('mouseenter', () => {
+	let shown = false;
+	const show = (isTouch) => {
+		if (shown) return;
+		shown = true;
+		hint.classList.toggle('touch', isTouch);
 		hint.classList.add('visible');
-		setTimeout(() => hint.classList.remove('visible'), VIEW_HINT_DURATION_MS);
-	}, { once: true });
+		setTimeout(
+			() => hint.classList.remove('visible'),
+			isTouch ? VIEW_HINT_TOUCH_DURATION_MS : VIEW_HINT_DURATION_MS
+		);
+	};
+
+	// A tap also fires a synthetic mouseenter afterwards, which `shown` ignores
+	elem.addEventListener('pointerdown', (e) => {
+		if (e.pointerType === 'touch') show(true);
+	});
+	elem.addEventListener('mouseenter', () => show(false));
 }
 
 /**
@@ -551,30 +569,49 @@ function initVolumeViews() {
 
 /**
  * Wire a number input (frames per second) to a view's playback speed.
- * Applies on every keystroke / spinner click, and snaps out-of-range or
- * empty values back into the input's min/max when the box loses focus.
+ * The box only takes whole numbers within its min/max: other characters are
+ * refused as they are typed, the speed is applied on every keystroke / spinner
+ * click, and the text is snapped to the value in use when the box loses focus.
  * @param {HTMLInputElement} input
- * @param {{setFps: Function, getFps: Function}} view
+ * @param {{setFps: Function}} view
  */
 function wireFpsInput(input, view) {
-	const min = parseFloat(input.min) || 1;
-	const max = parseFloat(input.max) || 60;
+	const min = Math.round(parseFloat(input.min)) || 1;
+	const max = Math.round(parseFloat(input.max)) || 60;
+	const maxDigits = String(max).length;
 
-	const apply = () => {
-		const fps = parseFloat(input.value);
-		if (!Number.isFinite(fps) || fps <= 0) return;
-		view.setFps(Math.min(max, Math.max(min, fps)));
+	// Whole number in range for the box's current text, or null while it is empty
+	const read = () => {
+		const fps = Math.round(parseFloat(input.value));
+		return Number.isFinite(fps) ? Math.min(max, Math.max(min, fps)) : null;
 	};
 
-	input.addEventListener('input', apply);
+	// A number input would otherwise take a decimal point, a sign and an exponent
+	input.addEventListener('beforeinput', (e) => {
+		if (e.data != null && /\D/.test(e.data)) e.preventDefault();
+	});
+
+	input.addEventListener('input', () => {
+		const fps = read();
+		if (fps === null) return;
+		// Anything that cannot be a value in range (pasted fraction, extra digit)
+		// is replaced straight away; shorter text is left alone while typing
+		if (!/^\d+$/.test(input.value) || input.value.length > maxDigits) {
+			input.value = String(fps);
+		}
+		view.setFps(fps);
+	});
+
 	input.addEventListener('change', () => {
-		apply();
-		// Normalise what the user sees to the value actually in use
-		input.value = String(view.getFps());
+		// Empty box: fall back to the markup's starting value
+		const fps = read() ?? (Math.round(parseFloat(input.defaultValue)) || min);
+		view.setFps(fps);
+		input.value = String(fps);
 	});
 
 	// Initialise the view from the input's starting value
-	apply();
+	const initial = read();
+	if (initial !== null) view.setFps(initial);
 }
 
 /**
