@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "data:push": "node scripts/sync-data.mjs"
   },
   "dependencies": {
     "brotli-wasm": "^3.0.1",

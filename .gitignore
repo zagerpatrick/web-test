@@ -7,6 +7,12 @@ dist/
 # Raw source data (large files - not needed for deployment)
 raw-data/
 
+# Converted datasets: served from Cloudflare R2, not from the site build.
+# Upload with `npm run data:push` (see README, "Data hosting").
+public/data/
+# What scripts/sync-data.mjs has uploaded so far
+.r2-sync-state.json
+
 # Python
 .venv/
 __pycache__/

@@ -2,6 +2,7 @@ import sharedRenderer from './js/SharedRenderer.js';
 import MeshTimeseriesView from './js/MeshTimeseriesView.js';
 import VolumeTimeseriesView from './js/VolumeTimeseriesView.js';
 import { initThemeToggle } from './js/theme.js';
+import { resolveDataPath } from './js/dataSource.js';
 
 /**
  * Main orchestration layer
@@ -44,13 +45,32 @@ function init() {
  * Every dataset inherits `defaults`, so per-dataset entries only need to list
  * what differs. `label` is optional: when omitted it is derived from the data
  * folder name (see labelFromBasePath).
+ *
+ * The `data/...` paths written in the markup are mapped to the data host here
+ * (see withResolvedPaths), so the views only ever see fetchable URLs.
  * @param {HTMLElement} wrapper
  * @param {Object} defaults - Values derived from the view element's data attributes
  * @returns {Object[]} At least one dataset
  */
 function readDatasets(wrapper, defaults) {
 	const list = readJsonList(wrapper?.dataset.datasets, 'data-datasets', () => true);
-	return list ? list.map((ds) => ({ ...defaults, ...ds })) : [{ ...defaults }];
+	const datasets = list ? list.map((ds) => ({ ...defaults, ...ds })) : [{ ...defaults }];
+	return datasets.map(withResolvedPaths);
+}
+
+/**
+ * Copy of a dataset or sequence entry with its `basePath`, and those of any
+ * `sequences` it lists, pointed at wherever the data is hosted: the R2 bucket
+ * in production builds, the local `public/data/` folder otherwise (see
+ * js/dataSource.js).
+ * @param {Object} entry - `{ basePath?, sequences?, ... }`
+ * @returns {Object}
+ */
+function withResolvedPaths(entry) {
+	const resolved = { ...entry };
+	if (typeof entry.basePath === 'string') resolved.basePath = resolveDataPath(entry.basePath);
+	if (Array.isArray(entry.sequences)) resolved.sequences = entry.sequences.map(withResolvedPaths);
+	return resolved;
 }
 
 /**
@@ -89,7 +109,9 @@ function numberAttr(elem, name) {
  *
  * Folders follow `<kind>_<cell>_<YYYYMMDD>`, e.g. `data/volumes_21_20260731/` or
  * `data/meshes_21_20260731/mesh` -> "20260731 Cell 21". Any other folder name is
- * shown as-is; an empty path gives null so the caller can fall back.
+ * shown as-is; an empty path gives null so the caller can fall back. Only the
+ * last folder is looked at, so a path already resolved to the data host
+ * (`https://.../meshes_21_20260731/mesh`) gives the same label.
  * @param {string} basePath - Directory (volumes) or file prefix (meshes)
  * @returns {string|null}
  */
@@ -405,7 +427,7 @@ function initMeshViews() {
 		// the single (implicit) dataset; a data-datasets entry can carry its own
 		// `sequences` list instead of a basePath.
 		const sequences = readJsonList(elem.dataset.sequences, 'data-sequences', (seq) => seq && typeof seq.basePath === 'string');
-		if (sequences && !wrapper?.dataset.datasets) datasets[0].sequences = sequences;
+		if (sequences && !wrapper?.dataset.datasets) datasets[0].sequences = sequences.map(withResolvedPaths);
 		const first = datasets[0];
 
 		const ui = setupPlaybackUi(wrapper, elem);

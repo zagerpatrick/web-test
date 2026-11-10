@@ -13,6 +13,7 @@ A Three.js web application for viewing timeseries of 3D meshes and volumetric im
 │   │   ├── SharedRenderer.js
 │   │   ├── MeshTimeseriesView.js
 │   │   ├── VolumeTimeseriesView.js
+│   │   ├── dataSource.js   # Maps `data/...` paths to where the datasets are hosted
 │   │   ├── theme.js        # Light / dark theme toggle
 │   │   └── ...
 │   ├── icons/              # Camera-preset SVG icons, inlined into the buttons at build time
@@ -21,16 +22,19 @@ A Three.js web application for viewing timeseries of 3D meshes and volumetric im
 │       ├── style.css       # Viewer page layout and typography
 │       └── home.css        # Home page layout and typography
 ├── public/                 # Static assets (served at root)
-│   ├── data/
-│   │   ├── meshes/         # GLB mesh files
-│   │   └── volumes/        # Binary volume data
+│   ├── data/               # Local copy of the datasets (not in git, hosted on R2)
+│   │   ├── meshes_<cell>_<date>/   # GLB mesh files
+│   │   └── volumes_<cell>_<date>/  # Binary volume data
 │   ├── brotli_wasm.js      # WASM decompression module
 │   └── brotli_wasm_bg.wasm
 ├── raw-data/               # Source data (not deployed)
 │   ├── plys/               # Original PLY mesh files
 │   └── images/             # Original Zarr volume files
 ├── scripts/                # Data conversion scripts
+│   ├── sync-data.mjs       # Uploads public/data/ to the R2 bucket (npm run data:push)
+│   └── r2-cors.json        # CORS policy of the R2 bucket
 ├── .github/workflows/      # GitHub Actions for deployment
+├── .env.production         # URL of the data host used by production builds
 ├── vite.config.js
 └── package.json
 ```
@@ -60,14 +64,105 @@ This project is configured for automatic deployment via GitHub Actions.
 3. Under "Build and deployment", select "GitHub Actions"
 4. The site will deploy automatically on each push to `main`
 
+Only the site itself (a few MB) is deployed this way. The datasets are served from
+Cloudflare R2 and are uploaded separately, see [Data hosting](#data-hosting-cloudflare-r2).
+
 ### Manual Deployment
 
 If you prefer manual deployment:
 
 ```bash
 npm run build
-# Deploy the contents of ./dist to your hosting provider
+# Deploy the contents of ./dist to your hosting provider, leaving out ./dist/data
+# (a local build copies public/data/ there, but the built site does not read it)
 ```
+
+## Data hosting (Cloudflare R2)
+
+The datasets are too large for GitHub Pages (1 GB site limit, 10 minute deploy limit),
+so they are neither in git nor in the site build. They live in a Cloudflare R2 bucket,
+`patrickzager-data`, which is served at `https://data.patrickzager.com/`.
+
+- **Paths**: pages keep naming datasets by a path under `data/`
+  (`data/meshes_21_20260731/mesh`). `src/js/dataSource.js` swaps that prefix for the
+  data host. Production builds take the host from `VITE_DATA_BASE_URL` in
+  `.env.production`; `npm run dev` does not read that file, so the same paths load from
+  the local `public/data/` folder.
+- **Bucket layout**: the bucket mirrors `public/data/`. The file
+  `public/data/<folder>/<file>` is the object `<folder>/<file>`, served at
+  `https://data.patrickzager.com/<folder>/<file>`.
+
+### Adding or changing a dataset
+
+1. Convert it into `public/data/<folder>/` (see [Data Processing](#data-processing))
+   and check it with `npm run dev`.
+2. Upload it with `npm run data:push`. Only new and changed files are sent.
+3. Commit and push the page changes that use it. Do this after the upload, so the
+   deployed page never points at files that are not there yet.
+
+Options go after a `--`:
+
+```bash
+npm run data:push -- --dry-run              # show what would be uploaded, change nothing
+npm run data:push -- meshes_21_20260731     # only this dataset folder
+npm run data:push -- --prune                # also delete bucket files whose local file is gone
+npm run data:push -- --all                  # upload everything again
+```
+
+- Use `--prune` after re-exporting a mesh sequence with fewer frames. The viewer counts
+  frames by probing the server, so leftover frames from the old export would still play.
+- The script uploads through [Wrangler](https://developers.cloudflare.com/workers/wrangler/),
+  Cloudflare's CLI, which `npx` downloads on first use. Log in once with
+  `npx wrangler login`.
+- Wrangler cannot list a bucket, so the script records what it has uploaded in
+  `.r2-sync-state.json` (not in git). Without that file, for example in a fresh clone,
+  the next push uploads everything again. Files changed in the bucket by other means
+  are not noticed; `--all` puts the bucket back in step with the local folder.
+
+### Caching
+
+Files are uploaded with `Cache-Control: public, max-age=14400` (the `CACHE_CONTROL`
+constant in `scripts/sync-data.mjs`), so browsers and Cloudflare's cache reuse them
+for up to 4 hours. New files are live straight away. A file replaced under the same
+name can be served stale for that long; to refresh it sooner, purge the cache in the
+Cloudflare dashboard: the `patrickzager.com` zone > Caching > Configuration > Purge
+Cache > Custom Purge > Hostname > `data.patrickzager.com`.
+
+### Working without the local data
+
+A clone has no `public/data/`. To run the dev server against the hosted data, create
+`.env.local` (not in git) containing:
+
+```
+VITE_DATA_BASE_URL=https://data.patrickzager.com/
+```
+
+Production builds are unaffected, because `.env.production` takes priority over
+`.env.local`. To make a production build read the local folder instead, run
+`VITE_DATA_BASE_URL=data/ npm run build`.
+
+### Bucket setup (one-time, kept for reference)
+
+```bash
+npx wrangler login
+npx wrangler r2 bucket create patrickzager-data
+npx wrangler r2 bucket cors set patrickzager-data --file scripts/r2-cors.json
+npx wrangler r2 bucket domain add patrickzager-data --domain data.patrickzager.com --zone-id <zone ID of patrickzager.com>
+```
+
+- The CORS policy lets any website read the files with `GET` and `HEAD`. They are
+  public anyway, and this keeps the dev server working on any port. To limit it to
+  the site, replace `"*"` in `scripts/r2-cors.json` with `"https://patrickzager.com"`
+  (plus any dev origins such as `"http://localhost:5173"`) and run the `cors set`
+  command again.
+- Cloudflare only caches some file types by default, and `.glb`, `.br` and `.json` are
+  not among them. A cache rule in the `patrickzager.com` zone (Caching > Cache Rules,
+  "Cache the R2 data bucket") makes it cache the data: when the hostname equals
+  `data.patrickzager.com`, cache eligibility is "Eligible for cache". How long a file
+  stays cached follows its `Cache-Control` header (see [Caching](#caching)). Without
+  the rule everything still works, but every download is read from R2 instead of the
+  cache. The `HEAD` requests the mesh viewer uses to count frames are never cached,
+  so those always reach R2.
 
 ## Data Processing
 
