@@ -43,8 +43,9 @@ function init() {
  * `{ basePath, label, caption, ... }` objects. Without it the viewer has a single
  * dataset taken from the view element's own attributes (`data-basepath`, ...).
  * Every dataset inherits `defaults`, so per-dataset entries only need to list
- * what differs. `label` is optional: when omitted it is derived from the data
- * folder name (see labelFromBasePath).
+ * what differs. `label`, the name shown beside the "Dataset i of n" counter, is
+ * optional: when omitted it is derived from the data folder name (see
+ * labelFromBasePath).
  *
  * The `data/...` paths written in the markup are mapped to the data host here
  * (see withResolvedPaths), so the views only ever see fetchable URLs.
@@ -105,10 +106,10 @@ function numberAttr(elem, name) {
 }
 
 /**
- * Derive a display label from a dataset's data folder.
+ * Derive a dataset's display name from its data folder.
  *
  * Folders follow `<kind>_<cell>_<YYYYMMDD>`, e.g. `data/volumes_21_20260731/` or
- * `data/meshes_21_20260731/mesh` -> "20260731 Cell 21". Any other folder name is
+ * `data/meshes_21_20260731/mesh` -> "Cell 21 07/31/2026" (month/day/year). Any other folder name is
  * shown as-is; an empty path gives null so the caller can fall back. Only the
  * last folder is looked at, so a path already resolved to the data host
  * (`https://.../meshes_21_20260731/mesh`) gives the same label.
@@ -118,7 +119,10 @@ function numberAttr(elem, name) {
 function labelFromBasePath(basePath) {
 	if (!basePath) return null;
 	const match = /(?:^|\/)(?:[^/]+_)?(\d+)_(\d{8})\/?(?:[^/]*)$/.exec(basePath);
-	if (match) return `${match[2]} Cell ${match[1]}`;
+	if (match) {
+		const [, cell, date] = match;
+		return `Cell ${cell} ${date.slice(4, 6)}/${date.slice(6, 8)}/${date.slice(0, 4)}`;
+	}
 	const segments = basePath.split('/').filter(Boolean);
 	// A mesh basePath ends in a file prefix; a volume basePath ends in the folder
 	const folder = basePath.endsWith('/') ? segments[segments.length - 1] : segments[segments.length - 2];
@@ -126,9 +130,10 @@ function labelFromBasePath(basePath) {
 }
 
 /**
- * Wire the prev/next dataset arrows and label in the header bar of one viewer
- * (eLife figure-supplement style). The arrows disable at either end rather than
- * wrapping. Hidden when there is only one dataset.
+ * Wire the prev/next dataset arrows and labels in the header bar of one viewer
+ * (eLife figure-supplement style): a "Dataset i of n" counter followed by the
+ * dataset's name (its `label`, or one derived from the data folder). The arrows
+ * disable at either end rather than wrapping. Hidden when there is only one dataset.
  * @param {HTMLElement} wrapper
  * @param {Object[]} datasets
  * @param {Function} onChange - (dataset, index) called after the arrows move
@@ -138,12 +143,14 @@ function wireDatasetNav(wrapper, datasets, onChange) {
 	const prevBtn = wrapper.querySelector('.dataset-prev');
 	const nextBtn = wrapper.querySelector('.dataset-next');
 	const label = wrapper.querySelector('.dataset-label');
+	const name = wrapper.querySelector('.dataset-name');
 
 	let index = 0;
 
 	const render = () => {
 		const ds = datasets[index];
-		if (label) label.textContent = ds.label || labelFromBasePath(ds.basePath) || `Dataset ${index + 1}`;
+		if (label) label.textContent = `Dataset ${index + 1} of ${datasets.length}`;
+		if (name) name.textContent = ds.label || labelFromBasePath(ds.basePath) || '';
 		if (prevBtn) prevBtn.disabled = index === 0;
 		if (nextBtn) nextBtn.disabled = index === datasets.length - 1;
 	};
@@ -182,25 +189,29 @@ const VIEW_PRESETS = [
 ];
 
 /**
- * Camera-preset icons, bundled as markup at build time and inlined into the
- * buttons so their cube faces can use the `--icon-face*` theme tokens (the
- * files in `src/icons/` reference the tokens directly and carry icon-specific
- * class names, so several inlined icons coexist on one page).
+ * Camera-preset and reset icons, bundled as markup at build time and inlined
+ * into the buttons so their cube faces can use the `--icon-face*` theme tokens
+ * (the files in `src/icons/` reference the tokens directly and carry
+ * icon-specific class names, so several inlined icons coexist on one page).
  */
 const ICONS = import.meta.glob('./icons/*.svg', { query: '?raw', import: 'default', eager: true });
 
 /**
  * Fill the `.view-buttons` bar of one viewer with a button per camera preset
- * and wire each to `view.setView()`. Any buttons already present in the markup
- * are kept and wired instead of being rebuilt.
+ * and wire each to `view.setView()`, followed by a reset button at the bar's
+ * right end that calls `view.resetView()` (default orientation, zoom and
+ * centring; the frame being shown is not touched). Any buttons already present
+ * in the markup are kept and wired instead of being rebuilt.
  * @param {HTMLElement} wrapper
- * @param {{setView: Function}} view
+ * @param {{setView: Function, resetView: Function}} view
+ * @param {Function} [onReset] - Called after the camera reset, for settings the
+ *     viewer page owns (the volume viewer's contrast and gamma sliders)
  */
-function wireViewButtons(wrapper, view) {
+function wireViewButtons(wrapper, view, onReset) {
 	const container = wrapper.querySelector('.view-buttons');
 	if (!container) return;
 
-	if (!container.querySelector('.view-btn')) {
+	if (!container.querySelector('.view-btn[data-view]')) {
 		for (const { id, label } of VIEW_PRESETS) {
 			const btn = document.createElement('button');
 			btn.className = 'view-btn';
@@ -212,8 +223,23 @@ function wireViewButtons(wrapper, view) {
 		}
 	}
 
-	container.querySelectorAll('.view-btn').forEach((btn) => {
+	container.querySelectorAll('.view-btn[data-view]').forEach((btn) => {
 		btn.addEventListener('click', () => view.setView(btn.dataset.view));
+	});
+
+	let resetBtn = container.querySelector('.view-reset');
+	if (!resetBtn) {
+		resetBtn = document.createElement('button');
+		resetBtn.className = 'view-btn view-reset';
+		resetBtn.type = 'button';
+		resetBtn.title = 'Reset view';
+		resetBtn.setAttribute('aria-label', 'Reset view');
+		resetBtn.innerHTML = ICONS['./icons/reset.svg'] ?? '↺';
+		container.appendChild(resetBtn);
+	}
+	resetBtn.addEventListener('click', () => {
+		view.resetView();
+		if (onReset) onReset();
 	});
 }
 
@@ -268,16 +294,42 @@ function setPlayButton(playBtn, isPlaying) {
 }
 
 /**
+ * Parse `data-frame-gaps`: the steps that take longer (or shorter) than the
+ * regular frame interval, as comma-separated `frame:seconds` pairs. `"8:1.9"`
+ * means the step from frame 8 to frame 9 takes 1.9 s instead of the interval.
+ * Frames are counted from 0. Malformed pairs are skipped.
+ * @param {string|undefined} value
+ * @returns {Map<number, number>} Seconds for the step that starts at each listed frame
+ */
+function parseFrameGaps(value) {
+	const gaps = new Map();
+	for (const pair of (value || '').split(',')) {
+		const [frame, seconds] = pair.split(':').map(part => parseFloat(part));
+		if (Number.isInteger(frame) && frame >= 0 && seconds >= 0) gaps.set(frame, seconds);
+	}
+	return gaps;
+}
+
+/**
  * Text for the frame counter: the zero-padded frame index, or, when the view
  * declares how many seconds one frame spans (`data-frame-interval`), the elapsed
- * time as `MMm SSs` counted from 0 at the first frame.
+ * time counted from 0 at the first frame. Whole-second timing reads `MMm SSs`;
+ * timing with fractions of a second (interval or any gap) reads `SS.Ss`.
  * @param {number} frameIndex
  * @param {number|undefined} frameInterval - Seconds per frame, or undefined for a plain index
+ * @param {Map<number, number>} [frameGaps] - Irregular steps, see parseFrameGaps
  * @returns {string}
  */
-function formatFrame(frameIndex, frameInterval) {
+function formatFrame(frameIndex, frameInterval, frameGaps = new Map()) {
 	if (!(frameInterval > 0)) return String(frameIndex).padStart(3, '0');
-	const totalSeconds = Math.round(frameIndex * frameInterval);
+	let elapsed = frameIndex * frameInterval;
+	let fractional = !Number.isInteger(frameInterval);
+	for (const [frame, seconds] of frameGaps) {
+		if (frame < frameIndex) elapsed += seconds - frameInterval;
+		if (!Number.isInteger(seconds)) fractional = true;
+	}
+	if (fractional) return `${elapsed.toFixed(1).padStart(4, '0')}s`;
+	const totalSeconds = Math.round(elapsed);
 	const minutes = Math.floor(totalSeconds / 60);
 	const seconds = totalSeconds % 60;
 	return `${String(minutes).padStart(2, '0')}m ${String(seconds).padStart(2, '0')}s`;
@@ -289,7 +341,8 @@ function formatFrame(frameIndex, frameInterval) {
  * view options, a reset for dataset switches, and the control wiring.
  *
  * Attributes read from the view element: `data-frame-interval` (seconds per
- * frame; the counter then shows elapsed time, see formatFrame) and
+ * frame; the counter then shows elapsed time, see formatFrame),
+ * `data-frame-gaps` (steps that differ from that interval, see parseFrameGaps) and
  * `data-autoplay="true"` (start playback once every file has loaded).
  * @param {HTMLElement} wrapper - The .mesh-view-wrapper / .volume-view-wrapper
  * @param {HTMLElement} elem - The .mesh-view / .volume-view element
@@ -303,6 +356,7 @@ function setupPlaybackUi(wrapper, elem) {
 	const progressText = wrapper.querySelector('.progress-text');
 	const progressContainer = wrapper.querySelector('.view-progress');
 	const frameInterval = numberAttr(elem, 'frameInterval');
+	const frameGaps = parseFrameGaps(elem.dataset.frameGaps);
 	const autoplay = elem.dataset.autoplay === 'true';
 	let view = null;
 
@@ -326,7 +380,7 @@ function setupPlaybackUi(wrapper, elem) {
 				timeline.max = 0;
 				timeline.value = 0;
 			}
-			if (frameSpan) frameSpan.textContent = formatFrame(0, frameInterval);
+			if (frameSpan) frameSpan.textContent = formatFrame(0, frameInterval, frameGaps);
 			if (progressBar) progressBar.style.width = '0%';
 			if (progressText) progressText.textContent = '0/…';
 			if (progressContainer) progressContainer.classList.remove('hidden');
@@ -351,7 +405,7 @@ function setupPlaybackUi(wrapper, elem) {
 			onFrameChange: (frameIndex, isLoaded) => {
 				if (timeline) timeline.value = frameIndex;
 				if (frameSpan) {
-					frameSpan.textContent = formatFrame(frameIndex, frameInterval) + (isLoaded ? '' : '...');
+					frameSpan.textContent = formatFrame(frameIndex, frameInterval, frameGaps) + (isLoaded ? '' : '...');
 				}
 			}
 		},
@@ -359,8 +413,10 @@ function setupPlaybackUi(wrapper, elem) {
 		/**
 		 * Attach the controls to the constructed view
 		 * @param {Object} constructedView - A MeshTimeseriesView or VolumeTimeseriesView
+		 * @param {Object} [options]
+		 * @param {Function} [options.onReset] - Extra work for the reset button, see wireViewButtons
 		 */
-		wire(constructedView) {
+		wire(constructedView, { onReset } = {}) {
 			view = constructedView;
 
 			if (playBtn) {
@@ -379,7 +435,7 @@ function setupPlaybackUi(wrapper, elem) {
 
 			if (fpsInput) wireFpsInput(fpsInput, view);
 
-			wireViewButtons(wrapper, view);
+			wireViewButtons(wrapper, view, onReset);
 			wireViewHint(elem);
 
 			// Track the view under the pointer for the keyboard shortcuts
@@ -414,9 +470,10 @@ function initMeshViews() {
 		// (degrees, counterclockwise from above) which turns meshes and coverslip
 		// about the vertical axis. In that mode data-coverslip-scale sizes the slab
 		// relative to the scene footprint. data-axes-size sets the orientation
-		// marker size in pixels (default 120). The camera zoom comes from the
+		// marker size in pixels (default 120). data-initial-view names the camera
+		// preset the view starts in and resets to (default "top"). The camera zoom comes from the
 		// --viewer-zoom CSS custom property on the view element. Playback
-		// attributes (data-autoplay, data-frame-interval) are read by setupPlaybackUi.
+		// attributes (data-autoplay, data-frame-interval, data-frame-gaps) are read by setupPlaybackUi.
 		const datasets = readDatasets(wrapper, {
 			basePath: elem.dataset.basepath || 'data/meshes/mesh',
 			meshCount: numberAttr(elem, 'meshcount'),
@@ -443,6 +500,7 @@ function initMeshViews() {
 			sceneRotation: numberAttr(elem, 'rotation'),
 			coverslipScale: numberAttr(elem, 'coverslipScale'),
 			axesSize: numberAttr(elem, 'axesSize'),
+			initialView: elem.dataset.initialView,
 			enableControls: true,
 			useVertexColors: !!first.vertexColors,
 			showCoverslip: elem.dataset.coverslip !== 'false',
@@ -479,7 +537,8 @@ function initVolumeViews() {
 		// Defaults come from the view element; the wrapper's data-datasets list
 		// (if any) overrides them per dataset. A dataset may also carry
 		// contrastMin / contrastMax (0-1) and gamma (0.2-2) presets. The coverslip
-		// attributes (data-coverslip="false", data-coverslip-opacity) apply to the view.
+		// attributes (data-coverslip="false", data-coverslip-size, data-coverslip-opacity)
+		// apply to the view, as does data-axes-size (orientation marker size in pixels).
 		const datasets = readDatasets(wrapper, {
 			basePath: elem.dataset.basepath || 'data/volumes/'
 		});
@@ -495,6 +554,9 @@ function initVolumeViews() {
 		const contrastValue = wrapper.querySelector('.volume-contrast-value');
 		const gammaSlider = wrapper.querySelector('.volume-gamma');
 		const gammaValue = wrapper.querySelector('.volume-gamma-value');
+
+		// The dataset on show, for the reset button
+		let currentDataset = first;
 
 		// A dataset preset moves the sliders before the value is applied
 		const applyDatasetPresets = (ds) => {
@@ -526,7 +588,9 @@ function initVolumeViews() {
 			gamma: initialGamma,
 			stepCount: 512,
 			showCoverslip: elem.dataset.coverslip !== 'false',
+			coverslipSize: numberAttr(elem, 'coverslipSize'),
 			coverslipOpacity: numberAttr(elem, 'coverslipOpacity'),
+			axesSize: numberAttr(elem, 'axesSize'),
 			// Timeline range and progress total follow the metadata frame count
 			onMetadataLoaded: (metadata) => ui.setFrameCount(metadata.frameCount),
 			...ui.callbacks
@@ -576,16 +640,31 @@ function initVolumeViews() {
 			applyGamma();
 		}
 
-		// Wire up dataset arrows (no-op with a single dataset)
-		wireDatasetNav(wrapper, datasets, (ds) => {
-			ui.reset();
+		// Put a dataset's own presets on the sliders, then the slider values on the view
+		const applyDisplaySettings = (ds) => {
 			applyDatasetPresets(ds);
 			if (applyContrast) applyContrast(contrastMaxSlider);
 			if (applyGamma) applyGamma();
+		};
+
+		// Wire up dataset arrows (no-op with a single dataset)
+		wireDatasetNav(wrapper, datasets, (ds) => {
+			currentDataset = ds;
+			ui.reset();
+			applyDisplaySettings(ds);
 			view.setDataset({ basePath: ds.basePath });
 		});
 
-		ui.wire(view);
+		// The reset button also puts contrast and gamma back to their base values:
+		// the sliders' starting values in the HTML, then the dataset's own presets
+		const resetDisplaySettings = () => {
+			for (const slider of [contrastMinSlider, contrastMaxSlider, gammaSlider]) {
+				if (slider) slider.value = slider.defaultValue;
+			}
+			applyDisplaySettings(currentDataset);
+		};
+
+		ui.wire(view, { onReset: resetDisplaySettings });
 	});
 }
 

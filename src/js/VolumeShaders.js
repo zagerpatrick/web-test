@@ -11,8 +11,12 @@ varying vec3 vDirection;
 
 void main() {
 	vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
-	vOrigin = vec3(inverse(modelMatrix) * vec4(cameraPosition, 1.0));
-	vDirection = position - vOrigin;
+	// The camera is orthographic: parallel rays along its viewing direction (the
+	// third row of the view matrix is the camera's backward axis in world space),
+	// each started in front of the unit box, further back than its diagonal
+	vec3 forward = -vec3(viewMatrix[0][2], viewMatrix[1][2], viewMatrix[2][2]);
+	vDirection = normalize(vec3(inverse(modelMatrix) * vec4(forward, 0.0)));
+	vOrigin = position - 2.0 * vDirection;
 	gl_Position = projectionMatrix * mvPosition;
 }
 `;

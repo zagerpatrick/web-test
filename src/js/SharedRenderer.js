@@ -1,9 +1,10 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
+import { setCameraAspect } from './ViewCamera.js';
 
 // Largest share of a view's smaller side the orientation marker may occupy
-const MARKER_MAX_FRACTION = 0.36;
+const MARKER_MAX_FRACTION = 0.38;
 
 /**
  * SharedRenderer - Singleton managing WebGLRenderer and scissor-based multi-scene render loop
@@ -20,6 +21,8 @@ class SharedRenderer {
 		SharedRenderer.instance = this;
 
 		this.views = [];
+		// Size of each view's element when it was last rendered, to notice resizes
+		this.viewSizes = new WeakMap();
 		this.canvas = null;
 		this.renderer = null;
 		this.loader = null;
@@ -165,11 +168,12 @@ class SharedRenderer {
 			const viewWidth = rect.width;
 			const viewHeight = rect.height;
 
-			// Update camera aspect ratio if needed, telling the view so it can refit
-			const aspect = viewWidth / viewHeight;
-			if (view.camera.aspect !== aspect) {
-				view.camera.aspect = aspect;
-				view.camera.updateProjectionMatrix();
+			// When the element changes size, give the camera its aspect and tell
+			// the view so it can refit
+			const size = this.viewSizes.get(view);
+			if (!size || size.width !== viewWidth || size.height !== viewHeight) {
+				this.viewSizes.set(view, { width: viewWidth, height: viewHeight });
+				setCameraAspect(view.camera, viewWidth / viewHeight);
 				if (typeof view.onViewResized === 'function') view.onViewResized();
 			}
 

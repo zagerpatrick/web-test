@@ -10,7 +10,7 @@
 		<link rel="icon" href="data:;base64,iVBORw0KGgo=">
 		<meta charset="utf-8">
 		<meta name="viewport" content="width=device-width, initial-scale=1">
-		<title>Cell Mesh Timeseries Render</title>
+		<title>Membrane Reservoirs Buffer the Rate of Cell Shape Change in Neutrophils</title>
 	</head>
 	<body>
 		<script type="module" src="main.js"></script>
@@ -24,45 +24,128 @@
 				<button class="theme-toggle" type="button"></button>
 			</div>
 
-			<h1>Neutrophil Membrane Dynamics</h1>
+			<h1>Membrane Reservoirs Buffer the Rate of Cell Shape Change in Neutrophils</h1>
 
-			<p>
-				Cell types across the tree of life maintain excess membrane. Fibroblasts, ameboid dictyostelium, 
-				early stage mammalian embryos, and nearly all immune cell types, organize portions of their plasma 
-				membrane into thin structures rich in membrane and poor in cytoplasm. While these structures have 
-				unique functions within any given cell type/organism, less is understood about how this organization 
-				of membrane also defines shape and mechanical state.
+			<p class="page-note">
+				*Note, this work is still in progress. The content that follows is a portion of the work that
+				will be completed and published here.
 			</p>
 
-			<p>
-				Despite the breadth of examples of membrane reservoirs across biology, their role in immune cells is 
-				understudied despite interest. Neutrophils, the first responder of the innate immune system, maintain
-				excess membrane in folds and filopodia. The work herein aims to better understand the role of the 
-				neutrophil membrane reservoir in cell shape, cell shape change, and migration.
-			</p>
-
-			<h2>Microscopy</h2>
-			
-			<p>
-				HL60s were imaged using the SOLS microscope at volumetric rate of 1.1 vol/s. The volumetric rendering
-				below displays collected datasets. Cells are stimulated with 488nm light at timepoint 8.
-			</p>
-
-			<!-- Volume view with its own controls -->
-			<div class="volume-view-wrapper"
+			<div class="mesh-view-wrapper"
 				 data-datasets='[
-					{"basePath": "data/volumes_24_20260731/"},
-					{"basePath": "data/volumes_19_20260729/"},
-					{"basePath": "data/volumes_18_20260729/"},
-					{"basePath": "data/volumes_17_20260729/"}
+					{"basePath": "data/meshes_16_20260721/mesh"}
 				 ]'>
 				<div class="dataset-nav">
 					<button class="dataset-prev" aria-label="Previous dataset" title="Previous dataset">&lsaquo;</button>
 					<button class="dataset-next" aria-label="Next dataset" title="Next dataset">&rsaquo;</button>
 					<span class="dataset-label"></span>
+					<span class="dataset-name"></span>
 				</div>
 				<div class="view-buttons"></div>
-				<div class="volume-view" data-basepath="data/volumes_24_20260731/"></div>
+				<div class="mesh-view"
+					 data-basepath="data/meshes_24_20260731/mesh"
+					 data-coverslip-size="200"
+					 data-axes-size="148"
+					 data-vertexcolors="true"
+					 data-initial-view="front"
+					 data-autoplay="true"
+					 data-frame-interval="1.1"
+					 data-frame-gaps="8:1.9">
+					<!-- Shown for a few seconds when the pointer first enters the viewer, or
+					     on the first touch, which shows the touch gestures instead of the
+					     mouse / keyboard lines (see wireViewHint in main.js) -->
+					<div class="view-hint" role="status" aria-live="polite">
+						<span>Drag to rotate</span>
+						<span class="hint-mouse">Scroll to zoom</span>
+						<span class="hint-mouse">Right-drag to pan</span>
+						<span class="hint-mouse">Space to play / pause</span>
+						<span class="hint-mouse">&larr; &rarr; to step frames</span>
+						<span class="hint-touch">Pinch to zoom</span>
+						<span class="hint-touch">Two-finger drag to pan</span>
+					</div>
+				</div>
+				<div class="view-bottom-cap"></div>
+				<div class="view-controls">
+					<button class="view-play" aria-label="Play" title="Play">
+						<svg class="icon-play" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M3 2v12l10-6z"/></svg>
+						<svg class="icon-pause" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M3 2h3.5v12H3zM9.5 2H13v12H9.5z"/></svg>
+					</button>
+					<input type="range" class="view-timeline" min="0" max="0" value="0">
+					<span class="view-frame">00.0s</span>
+					<div class="view-speed-control">
+						<label>FPS:</label>
+						<input type="number" inputmode="numeric" class="view-fps" min="1" max="60" step="1" value="8" aria-label="Playback speed in frames per second">
+					</div>
+				</div>
+				<div class="view-progress">
+					<span class="progress-label">Loading:</span>
+					<div class="progress-bar-wrapper">
+						<div class="progress-bar"></div>
+					</div>
+					<span class="progress-text">0/&hellip;</span>
+				</div>
+				<!-- Figure caption (eLife style): bold label and title, then the description -->
+				<div class="view-caption">
+					<span class="caption-label">Figure 1.</span>
+					<span class="caption-title">Neutrophil membrane dynamics.</span>
+					The neutrophil membrane reservoir is rapdily accessed to fuel protrusion growth.
+				</div>
+			</div>
+			<!-- Inline view with its own controls -->
+
+			<h2>Introduction</h2>
+
+			<p>
+				A diverse array of eukaryotic cells store excess plasma membrane on their cell surface. 
+				Fibroblasts, amoeboid Dictyostelium, early-stage mammalian embryos, and nearly all immune cells 
+				maintain thin surface folds rich in membrane and poor in cytoplasm. These surface folds and 
+				filopodia serve a range of functions, from cellular adhesion to chemical sensing, 
+				but in my work, I am interested in how this organization of membrane encodes cell shape and 
+				mechanical state.
+			</p>
+
+			<p>
+				To study this linkage, I use neutrophils as my model system. It has previously been shown that 
+				neutrophils maintain a reservoir of excess membrane at rest and that this membrane is lost 
+				following chemical activation and cell polarization. In this work, I further investigate 
+				how the neutrophil membrane reservoir enables shape change and migration.
+			</p>
+
+			<h2>Results</h2>
+			
+			<p>
+				To visualize neutrophil membrane dynamics, I used neutrophil-like HL-60 cells expressing the 
+				membrane marker HT-CAAX. To study the role of the neutrophil membrane reservoir in protrusion 
+				generation and polarization, I expressed optogenetic PI3K, which drives protrusion formation 
+				when activated with 488 nm light. The volumetric time series below shows quiescent, 
+				undifferentiated HL-60 cells. At timepoint eight the cells are stimulated with light to mimic 
+				neutrophil polarization. The images were captured on a single-objective lightsheet microscope. 
+				The shallow 30° angle of the lightsheet was used to stimulate only the top of the cell, resulting 
+				in local protrusion generation. The resultant protrusion generation is rapid, starting only seconds 
+				after light stimulation.
+
+			</p>
+
+			<!-- Volume view with its own controls -->
+			<div class="volume-view-wrapper"
+				 data-datasets='[
+					{"basePath": "data/volumes_24_20260731/", "contrastMin": 0.04, "contrastMax": 0.45},
+					{"basePath": "data/volumes_18_20260729/", "contrastMin": 0.07, "contrastMax": 0.88},
+					{"basePath": "data/volumes_17_20260729/", "contrastMin": 0.07, "contrastMax": 0.82}
+				 ]'>
+				<div class="dataset-nav">
+					<button class="dataset-prev" aria-label="Previous dataset" title="Previous dataset">&lsaquo;</button>
+					<button class="dataset-next" aria-label="Next dataset" title="Next dataset">&rsaquo;</button>
+					<span class="dataset-label"></span>
+					<span class="dataset-name"></span>
+				</div>
+				<div class="view-buttons"></div>
+				<div class="volume-view"
+					 data-basepath="data/volumes_24_20260731/"
+					 data-coverslip-size="200"
+					 data-axes-size="148"
+					 data-frame-interval="1.1"
+					 data-frame-gaps="8:1.9"></div>
 				<div class="view-bottom-cap"></div>
 				<div class="volume-controls">
 					<div class="volume-control-row volume-playback-row">
@@ -71,7 +154,7 @@
 							<svg class="icon-pause" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M3 2h3.5v12H3zM9.5 2H13v12H9.5z"/></svg>
 						</button>
 						<input type="range" class="view-timeline" min="0" max="0" value="0">
-						<span class="view-frame">000</span>
+						<span class="view-frame">00.0s</span>
 						<div class="view-speed-control">
 							<label>FPS:</label>
 							<input type="number" inputmode="numeric" class="view-fps" min="1" max="60" step="1" value="8" aria-label="Playback speed in frames per second">
@@ -100,79 +183,54 @@
 					</div>
 					<span class="progress-text">0/&hellip;</span>
 				</div>
+				<!-- Figure caption (eLife style): bold label and title, then the description -->
+				<div class="view-caption">
+					<span class="caption-label">Figure 2.</span>
+					<span class="caption-title">Optogenetic stimulation drives rapid protrusion generation.</span>
+					Volumetric time series of undifferentiated HL-60s visualized with HT-CAAX. Cells are stimulated with blue light at 
+					timepoint eight. 
+				</div>
 			</div>
 			<!-- Volume view with its own controls -->
 
-			<p class="controls-hint">
-				Keyboard: Space = play/pause focused view, Arrow keys = step frames
-			</p>
-			
-			<h2>Mesh Generation</h2>
-
 			<p>
-				Meshes of the cell surface are generated to visualize membrane dynamics.
+				To quantify the dynamics of reservoir loss and protrusion growth I generated meshes of the cell
+				surfase. The mesh timeseries are registered to the first timepoint to make visual and computational
+				tracking of the individiual membrane folds and protusions easier. Fine membrane features are 
+				classified using the shape diameter function which differenties between think membrane folds and
+				the cell body vis local thickness approximations. Individual membrane folds that compose the membrane 
+				reservoir are labeled in blue and lamellipodia protrusions in orange. Lamellipodia labels are first 
+				sparsely assigned via a least squares model trained on feature size and extent and propagated to the 
+				rest of the mesh using a graph-based label propagation algorithm. Lastly missing labels are filled in by
+				me by backtracking lamellipodia labels to their source.
 			</p>
 
 			<!-- Inline view with its own controls -->
 			<div class="mesh-view-wrapper"
 				 data-datasets='[
 					{"basePath": "data/meshes_24_20260731/mesh"},
-					{"basePath": "data/meshes_19_20260729/mesh"},
 					{"basePath": "data/meshes_18_20260729/mesh"},
-					{"basePath": "data/meshes_17_20260729/mesh"}
+					{"basePath": "data/meshes_17_20260729/mesh"},
+					{"basePath": "data/meshes_8_20260724/mesh"},
+					{"basePath": "data/meshes_6_20260724/mesh"},
+					{"basePath": "data/meshes_3_20260724/mesh"},
+					{"basePath": "data/meshes_16_20260721/mesh"},
+					{"basePath": "data/meshes_16_20260209/mesh"}
 				 ]'>
 				<div class="dataset-nav">
 					<button class="dataset-prev" aria-label="Previous dataset" title="Previous dataset">&lsaquo;</button>
 					<button class="dataset-next" aria-label="Next dataset" title="Next dataset">&rsaquo;</button>
 					<span class="dataset-label"></span>
-				</div>
-				<div class="view-buttons"></div>
-				<div class="mesh-view" data-basepath="data/meshes_24_20260731/mesh"></div>
-				<div class="view-bottom-cap"></div>
-				<div class="view-controls">
-					<button class="view-play" aria-label="Play" title="Play">
-						<svg class="icon-play" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M3 2v12l10-6z"/></svg>
-						<svg class="icon-pause" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M3 2h3.5v12H3zM9.5 2H13v12H9.5z"/></svg>
-					</button>
-					<input type="range" class="view-timeline" min="0" max="0" value="0">
-					<span class="view-frame">000</span>
-					<div class="view-speed-control">
-						<label>FPS:</label>
-						<input type="number" inputmode="numeric" class="view-fps" min="1" max="60" step="1" value="8" aria-label="Playback speed in frames per second">
-					</div>
-				</div>
-				<div class="view-progress">
-					<span class="progress-label">Loading:</span>
-					<div class="progress-bar-wrapper">
-						<div class="progress-bar"></div>
-					</div>
-					<span class="progress-text">0/&hellip;</span>
-				</div>
-			</div>
-			<!-- Inline view with its own controls -->
-
-			<p>
-				Fine membrane features are classified using the shape diameter function.
-				Individual membrane reservoirs are labeled in blue and lamellipodia in orange.
-			</p>
-
-			<!-- Inline view with its own controls -->
-			<div class="mesh-view-wrapper"
-				 data-datasets='[
-					{"basePath": "data/meshes_24_20260731/mesh"},
-					{"basePath": "data/meshes_19_20260729/mesh"},
-					{"basePath": "data/meshes_18_20260729/mesh"},
-					{"basePath": "data/meshes_17_20260729/mesh"}
-				 ]'>
-				<div class="dataset-nav">
-					<button class="dataset-prev" aria-label="Previous dataset" title="Previous dataset">&lsaquo;</button>
-					<button class="dataset-next" aria-label="Next dataset" title="Next dataset">&rsaquo;</button>
-					<span class="dataset-label"></span>
+					<span class="dataset-name"></span>
 				</div>
 				<div class="view-buttons"></div>
 				<div class="mesh-view"
 					 data-basepath="data/meshes_24_20260731/mesh"
-					 data-vertexcolors="true"></div>
+					 data-coverslip-size="200"
+					 data-axes-size="148"
+					 data-vertexcolors="true"
+					 data-frame-interval="1.1"
+					 data-frame-gaps="8:1.9"></div>
 				<div class="view-bottom-cap"></div>
 				<div class="view-controls">
 					<button class="view-play" aria-label="Play" title="Play">
@@ -180,7 +238,7 @@
 						<svg class="icon-pause" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M3 2h3.5v12H3zM9.5 2H13v12H9.5z"/></svg>
 					</button>
 					<input type="range" class="view-timeline" min="0" max="0" value="0">
-					<span class="view-frame">000</span>
+					<span class="view-frame">00.0s</span>
 					<div class="view-speed-control">
 						<label>FPS:</label>
 						<input type="number" inputmode="numeric" class="view-fps" min="1" max="60" step="1" value="8" aria-label="Playback speed in frames per second">
@@ -192,6 +250,12 @@
 						<div class="progress-bar"></div>
 					</div>
 					<span class="progress-text">0/&hellip;</span>
+				</div>
+				<!-- Figure caption (eLife style): bold label and title, then the description -->
+				<div class="view-caption">
+					<span class="caption-label">Figure 3.</span>
+					<span class="caption-title">Classification of fine membrane features.</span>
+					Membrane features are classified using the shape diameter function. Membrane reservoir is labeled in blue and lamellipodia in orange.
 				</div>
 			</div>
 			<!-- Inline view with its own controls -->

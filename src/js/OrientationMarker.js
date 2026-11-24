@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
 // Embedded Helvetiker Black (extra bold) font subset for X, Y, Z characters
 const helvetikerBlackFont = {
@@ -24,6 +25,21 @@ const helvetikerBlackFont = {
 
 // Default charcoal color for labels
 const DEFAULT_LABEL_COLOR = 0x363636;
+
+// Label outline: its width as a fraction of the label size, and the number of
+// offset copies of the glyph that draw it
+const OUTLINE_WIDTH = 0.09;
+const OUTLINE_COPIES = 16;
+
+/**
+ * Black or white, whichever stands out against a colour
+ * @param {number} color - Hex colour
+ * @returns {number}
+ */
+function contrastingColor(color) {
+	const { r, g, b } = new THREE.Color(color);
+	return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.5 ? 0x000000 : 0xffffff;
+}
 
 /**
  * Parse font outline commands to create a Shape
@@ -67,13 +83,15 @@ function parseOutline(outline, scale) {
 }
 
 /**
- * Create text mesh for a label (extra bold, extruded for thickness)
+ * Create text mesh for a label (extra bold, extruded for thickness) with an
+ * outline around it, like a subtitle's, so it stays readable over anything
  * @param {string} char - Character to render
  * @param {number} size - Size of the label
  * @param {number} color - Color for the label
+ * @param {number} outlineColor - Color for the outline
  * @returns {THREE.Mesh}
  */
-function createLabelMesh(char, size, color) {
+function createLabelMesh(char, size, color, outlineColor) {
 	const glyph = helvetikerBlackFont.glyphs[char];
 	if (!glyph) {
 		console.warn(`Glyph for "${char}" not found`);
@@ -101,8 +119,28 @@ function createLabelMesh(char, size, color) {
 		color: color,
 		toneMapped: false
 	});
+	const mesh = new THREE.Mesh(geometry, material);
 
-	return new THREE.Mesh(geometry, material);
+	// Outline: the flat glyph repeated around a circle of the outline's width,
+	// merged into one mesh that sits just behind the label so only its rim shows
+	const flat = new THREE.ShapeGeometry(shape);
+	flat.translate(-centerX, -centerY, 0);
+	const width = size * OUTLINE_WIDTH;
+	const copies = [];
+	for (let i = 0; i < OUTLINE_COPIES; i++) {
+		const angle = (i / OUTLINE_COPIES) * Math.PI * 2;
+		copies.push(flat.clone().translate(Math.cos(angle) * width, Math.sin(angle) * width, 0));
+	}
+	const outline = new THREE.Mesh(
+		mergeGeometries(copies, false),
+		new THREE.MeshBasicMaterial({ color: outlineColor, toneMapped: false })
+	);
+	flat.dispose();
+	copies.forEach((g) => g.dispose());
+	outline.position.z = bbox.min.z - centerZ - size * 0.01;
+	mesh.add(outline);
+
+	return mesh;
 }
 
 /**
@@ -117,10 +155,11 @@ export default class OrientationMarker {
 	 * @param {Object} options - Configuration options
 	 * @param {number} options.size - Size of the marker viewport in pixels (default: 120)
 	 * @param {number} options.axisLength - Length of axis lines (default: 1.9)
-	 * @param {number} options.labelColor - Color for axis labels (default: 0x363636)
+	 * @param {number} options.labelColor - Color for axis labels (default: 0x363636);
+	 *   they are outlined in white when dark and in black when light
 	 */
 	constructor(options = {}) {
-		this.size = options.size || 120;
+		this.size = options.size > 0 ? options.size : 120;
 		this.axisLength = options.axisLength || 1.9;
 		this.labelColor = options.labelColor !== undefined ? options.labelColor : DEFAULT_LABEL_COLOR;
 
@@ -220,7 +259,7 @@ export default class OrientationMarker {
 			this.axesGroup.add(cone);
 
 			// Text label - added to scene directly, not axesGroup (for billboarding)
-			const labelMesh = createLabelMesh(axis.label, labelSize, this.labelColor);
+			const labelMesh = createLabelMesh(axis.label, labelSize, this.labelColor, contrastingColor(this.labelColor));
 			if (labelMesh) {
 				labelMesh.userData.axisDir = axis.dir.clone();
 				this.scene.add(labelMesh);

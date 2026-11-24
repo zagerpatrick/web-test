@@ -6,6 +6,14 @@ import VolumeMaterialFactory from './VolumeMaterialFactory.js';
 import OrientationMarker from './OrientationMarker.js';
 import Coverslip from './Coverslip.js';
 import { BACKGROUND, COVERSLIP } from './RenderStyle.js';
+import {
+	VIEW_PRESETS, animateCamera, createViewCamera, fitZoom, poseCamera, setZoom, syncControls
+} from './ViewCamera.js';
+
+// Distance from the orbit target to the camera, in the box's normalized units
+// (longest side = 1); far enough to keep the scene between the near and far
+// planes from every direction (see ViewCamera.js)
+const CAMERA_DISTANCE = 50;
 
 // First-frame centring: voxels at or above this fraction of the dataset's value
 // range (above its minimum) count as "the cell", and the outermost 1% of those
@@ -19,13 +27,15 @@ const CONTENT_TRIM = 0.01;
  *
  * Each view has its own:
  * - Scene with volume rendering box
- * - Camera with TrackballControls
+ * - Orthographic camera (see ViewCamera.js) with TrackballControls; its default
+ *   zoom fits the coverslip seen from above
  * - One persistent R8 3D texture, updated in place from a decoded-frame cache
  * - Independent playback state
  * - Volume-specific controls (contrast limits, gamma)
  * - A coverslip slab at the bottom face of the volume box, 25% wider than the
- *   box; the box is shifted by one fixed XY offset so the first frame's cell is
- *   centred on the slab while later frames keep their registered motion
+ *   box unless a size is given; the box is shifted by one fixed XY offset so the
+ *   first frame's cell is centred on the slab while later frames keep their
+ *   registered motion
  */
 export default class VolumeTimeseriesView {
 	/**
@@ -44,7 +54,10 @@ export default class VolumeTimeseriesView {
 	 * @param {number} options.gamma - Initial gamma exponent (default: 1.0)
 	 * @param {number} options.stepCount - Ray marching steps (default: 512)
 	 * @param {boolean} options.showCoverslip - Show the coverslip slab under the volume (default: true)
+	 * @param {number} options.coverslipSize - Square footprint of the coverslip in voxels, the
+	 *   mesh view's units (default: 1.25 x the volume box footprint)
 	 * @param {number} options.coverslipOpacity - Opacity of the coverslip body (default: 0.12)
+	 * @param {number} options.axesSize - Size of the orientation marker in pixels (default: 120)
 	 * @param {Function} options.onLoadProgress - Callback for load progress (loaded, total)
 	 * @param {Function} options.onLoadComplete - Callback when initial load complete
 	 * @param {Function} options.onFrameChange - Callback when frame changes (index)
@@ -67,7 +80,9 @@ export default class VolumeTimeseriesView {
 
 		// Coverslip slab drawn at the bottom face of the volume box
 		this.showCoverslip = options.showCoverslip !== false;
+		this.coverslipSize = Number.isFinite(options.coverslipSize) ? options.coverslipSize : null;
 		this.coverslipOpacity = options.coverslipOpacity ?? COVERSLIP.volumeBodyOpacity;
+		this.axesSize = options.axesSize;
 
 		// Callbacks
 		this.onLoadProgress = options.onLoadProgress || (() => {});
@@ -88,6 +103,16 @@ export default class VolumeTimeseriesView {
 		this.initialLoadComplete = false;
 		// Incremented by setDataset() so async work for a previous dataset can bail out
 		this.loadGeneration = 0;
+		// Incremented by each camera animation so a newer one supersedes it
+		this.cameraAnimationId = 0;
+		// Set once the user orbits / zooms; until then the camera follows the default zoom
+		this.cameraTouched = false;
+		// Point the camera orbits and looks at (the origin unless panned); shared
+		// with the controls
+		this.target = new THREE.Vector3();
+		// Coverslip footprint in normalized units, which the default zoom fits (see
+		// _defaultZoom); a unit box's slab until the real box is built
+		this.slabSize = { x: COVERSLIP.footprintScale, y: COVERSLIP.footprintScale };
 
 		// Three.js objects
 		this.scene = null;
@@ -123,24 +148,25 @@ export default class VolumeTimeseriesView {
 		this.scene.background = new THREE.Color(BACKGROUND.volume);
 
 		// Create camera
-		this.camera = new THREE.PerspectiveCamera(45, 1, 0.1, 20000);
+		this.camera = createViewCamera(CAMERA_DISTANCE);
 		// Start in the 'top' preset (looking down world Z, see setView)
-		this.camera.position.set(0, 0, 1.75);
-		this.camera.up.set(0, 1, 0);
-		this.camera.lookAt(0, 0, 0);
+		poseCamera(this.camera, this.target, 'top', CAMERA_DISTANCE);
+		setZoom(this.camera, this._defaultZoom());
 
 		// Create controls
 		if (this.enableControls) {
 			this.controls = new TrackballControls(this.camera, this.elem);
 			this.controls.rotateSpeed = 2.0;
 			this.controls.zoomSpeed = 1.2;
-			this.controls.panSpeed = 0.8;
 			this.controls.staticMoving = false;
 			this.controls.dynamicDampingFactor = 0.6;
+			this.controls.target = this.target;
+			this.controls.addEventListener('start', () => { this.cameraTouched = true; });
+			syncControls(this.controls, CAMERA_DISTANCE);
 		}
 
 		// Create orientation marker with light text for volume viewer
-		this.orientationMarker = new OrientationMarker({ labelColor: 0xcccccc });
+		this.orientationMarker = new OrientationMarker({ size: this.axesSize, labelColor: 0xcccccc });
 
 		// Create volume loader and material factory
 		this.volumeLoader = this._createLoader();
@@ -364,13 +390,18 @@ export default class VolumeTimeseriesView {
 		this.scene.add(this.volumeBox);
 
 		// Coverslip: centred on the origin at the box's bottom face (slice 0, where
-		// the cell rests) and 25% wider than the box footprint, in the box's
-		// normalized units; 12 voxels thick with 1.6-voxel edges like the mesh view,
-		// outlined in white for the dark background
+		// the cell rests), a square of the given size or else 25% wider than the box
+		// footprint, in the box's normalized units; 12 voxels thick with 1.6-voxel
+		// edges like the mesh view, outlined in white for the dark background.
+		// The default zoom fits this footprint, so note the one it replaces.
+		const previousDefaultZoom = this._defaultZoom();
+		this.slabSize = this.coverslipSize !== null
+			? { x: this.coverslipSize / maxDim, y: this.coverslipSize / maxDim }
+			: { x: normalizedSize.x * COVERSLIP.footprintScale, y: normalizedSize.y * COVERSLIP.footprintScale };
 		if (this.showCoverslip) {
 			this.coverslip = new Coverslip({
-				sizeX: normalizedSize.x * COVERSLIP.footprintScale,
-				sizeY: normalizedSize.y * COVERSLIP.footprintScale,
+				sizeX: this.slabSize.x,
+				sizeY: this.slabSize.y,
 				thickness: COVERSLIP.thickness / maxDim,
 				edgeRadius: COVERSLIP.edgeRadius / maxDim,
 				edgeColor: COVERSLIP.edgeColorDark,
@@ -380,19 +411,42 @@ export default class VolumeTimeseriesView {
 			this.scene.add(this.coverslip.group);
 		}
 
-		// On a dataset switch the user's camera orientation and zoom are kept
-		if (!resetCamera) return;
-
-		// Adjust camera based on volume size, starting in the 'top' preset
-		// (same distance as the old diagonal placement so zoom level is unchanged)
-		const distance = Math.max(normalizedSize.x, normalizedSize.y, normalizedSize.z) * .72 * Math.sqrt(3);
-		this.camera.position.set(0, 0, distance);
-		this.camera.up.set(0, 1, 0);
-		this.camera.lookAt(0, 0, 0);
-
-		if (this.controls) {
-			this.controls.target.set(0, 0, 0);
+		// On a dataset switch the user's camera orientation is kept, and so is the
+		// zoom relative to the default: the slab keeps its size on screen even when
+		// the new volume is normalized by a different longest side
+		if (!resetCamera) {
+			setZoom(this.camera, this.camera.zoom * this._defaultZoom() / previousDefaultZoom);
+			return;
 		}
+
+		// Start in the 'top' preset at the default zoom
+		this.target.set(0, 0, 0);
+		poseCamera(this.camera, this.target, 'top', CAMERA_DISTANCE);
+		setZoom(this.camera, this._defaultZoom());
+		this.cameraTouched = false;
+	}
+
+	/**
+	 * Zoom of the default view: the coverslip footprint, seen from above, fills the
+	 * view with the fit margin around it (whether or not the slab is shown). The
+	 * same zoom is used from every preset, so the cell keeps its size when the
+	 * view is turned.
+	 * @private
+	 * @returns {number}
+	 */
+	_defaultZoom() {
+		return fitZoom(this.camera, this.slabSize.x / 2, this.slabSize.y / 2);
+	}
+
+	/**
+	 * Called by the shared renderer when the view element changes size (window
+	 * resize, phone rotation). The default zoom depends on the aspect, so redo it
+	 * as long as the user has not taken over the camera.
+	 */
+	onViewResized() {
+		if (this.isDisposed) return;
+		syncControls(this.controls, CAMERA_DISTANCE);
+		if (!this.cameraTouched) setZoom(this.camera, this._defaultZoom());
 	}
 
 	/**
@@ -808,78 +862,40 @@ export default class VolumeTimeseriesView {
 	 * @param {string} viewName - One of: 'iso', 'top', 'bottom', 'front', 'back', 'left', 'right'
 	 */
 	setView(viewName) {
-		const presets = {
-			iso:    { pos: [1, -1, 1], up: [0, 0, 1] },
-			top:    { pos: [0, 0, 1], up: [0, 1, 0] },
-			bottom: { pos: [0, 0, -1], up: [0, -1, 0] },
-			front:  { pos: [0, -1, 0], up: [0, 0, 1] },
-			back:   { pos: [0, 1, 0], up: [0, 0, 1] },
-			left:   { pos: [-1, 0, 0], up: [0, 0, 1] },
-			right:  { pos: [1, 0, 0], up: [0, 0, 1] }
-		};
-
-		const preset = presets[viewName];
-		if (!preset) return;
-
-		const distance = this.camera.position.length();
-		const targetPos = new THREE.Vector3(...preset.pos).normalize().multiplyScalar(distance);
-		const targetUp = new THREE.Vector3(...preset.up);
-
-		this._animateCameraTo(targetPos, targetUp);
+		if (!VIEW_PRESETS[viewName]) return;
+		// Turn about the origin (a panned orbit point jumps back to it); the zoom
+		// is left as it is
+		this.target.set(0, 0, 0);
+		this._animateCameraTo(viewName);
 	}
 
 	/**
-	 * Animate camera to target position
+	 * Return the camera to the view it starts in, with the same animation as the
+	 * presets: the 'top' orientation at the default zoom, with any panning undone
+	 * (the orbit point glides back to the origin from wherever it was panned).
+	 * The frame being shown, playback and the display settings are left alone.
+	 */
+	resetView() {
+		this._animateCameraTo('top', { pivot: new THREE.Vector3(), zoom: this._defaultZoom() });
+		// Back on the default view, so it follows the default zoom on resize again
+		this.cameraTouched = false;
+	}
+
+	/**
+	 * Animate the camera to a preset, superseding any animation still running
+	 * @param {string} presetName - Key of VIEW_PRESETS
+	 * @param {Object} [end] - Orbit point and zoom to end on (see animateCamera);
+	 *     the current ones when omitted
 	 * @private
 	 */
-	_animateCameraTo(targetPosition, targetUp) {
-		const duration = 700;
-		const startTime = performance.now();
-
-		const startPos = this.camera.position.clone();
-		const startUp = this.camera.up.clone();
-		const distance = startPos.length();
-
-		const startDir = startPos.clone().normalize();
-		const endDir = targetPosition.clone().normalize();
-
-		const rotationQuat = new THREE.Quaternion();
-		rotationQuat.setFromUnitVectors(startDir, endDir);
-
-		const animate = () => {
-			if (this.isDisposed) return;
-
-			const elapsed = performance.now() - startTime;
-			const t = Math.min(elapsed / duration, 1);
-			const eased = 1 - Math.pow(1 - t, 3);
-
-			const currentQuat = new THREE.Quaternion();
-			currentQuat.slerpQuaternions(new THREE.Quaternion(), rotationQuat, eased);
-
-			const currentDir = startDir.clone().applyQuaternion(currentQuat);
-			this.camera.position.copy(currentDir.multiplyScalar(distance));
-			this.camera.up.lerpVectors(startUp, targetUp, eased).normalize();
-			this.camera.lookAt(0, 0, 0);
-
-			if (this.controls) {
-				this.controls.target.set(0, 0, 0);
-			}
-
-			if (t < 1) {
-				requestAnimationFrame(animate);
-			} else {
-				this.camera.position.copy(targetPosition);
-				this.camera.up.copy(targetUp);
-				this.camera.lookAt(0, 0, 0);
-
-				if (this.controls) {
-					this.controls.target.set(0, 0, 0);
-					this.controls.update();
-				}
-			}
-		};
-
-		requestAnimationFrame(animate);
+	_animateCameraTo(presetName, end = {}) {
+		const animationId = ++this.cameraAnimationId;
+		animateCamera(
+			this.camera, this.target, CAMERA_DISTANCE, { preset: presetName, ...end },
+			() => !this.isDisposed && animationId === this.cameraAnimationId,
+			// Let the controls pick up the new camera state
+			() => { if (this.controls) this.controls.update(); }
+		);
 	}
 
 	/**

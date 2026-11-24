@@ -13,10 +13,11 @@ A Three.js web application for viewing timeseries of 3D meshes and volumetric im
 │   │   ├── SharedRenderer.js
 │   │   ├── MeshTimeseriesView.js
 │   │   ├── VolumeTimeseriesView.js
+│   │   ├── ViewCamera.js   # Orthographic camera, fit-to-coverslip zoom and pan speed shared by both views
 │   │   ├── dataSource.js   # Maps `data/...` paths to where the datasets are hosted
 │   │   ├── theme.js        # Light / dark theme toggle
 │   │   └── ...
-│   ├── icons/              # Camera-preset SVG icons, inlined into the buttons at build time
+│   ├── icons/              # Camera-preset and reset SVG icons, inlined into the buttons at build time
 │   └── styles/
 │       ├── viewer.css      # Viewer components (canvas, views, controls) shared by every page
 │       ├── style.css       # Viewer page layout and typography
@@ -174,14 +175,17 @@ The `scripts/` directory contains utilities for converting raw data:
   pure-Python ray caster). Every frame is translated by the same offset, the centre of the
   whole sequence's bounding box (or `--center Z Y X`), so registered meshes keep their
   frame-to-frame positions; the offset and bounds are written to `metadata.json` next to
-  the GLBs.
+  the GLBs. `--num-meshes N` (`-n N`) converts only the first N meshes, in which case the
+  offset and bounds cover just those frames; pass `--center` to pin the offset instead.
 - `convert-zarr-to-bin.py` - Converts Zarr volumes to Brotli-compressed binary
 
 ### Data layout
 
 - **Dataset folders** are named `<kind>_<cell>_<YYYYMMDD>`, e.g. `meshes_21_20260731`
-  and `volumes_21_20260731`. The label shown above a viewer is derived from that name
-  ("20260731 Cell 21") unless a dataset entry in `data-datasets` sets `label` explicitly.
+  and `volumes_21_20260731`. A viewer with several datasets shows "Dataset i of n" above
+  it, followed by the dataset's name, which is derived from that folder name as cell then
+  month/day/year ("Cell 21 07/31/2026") unless a dataset entry in `data-datasets` sets
+  `label` explicitly.
 - **Meshes** (`public/data/meshes_<cell>_<date>/`): one GLB per frame named `<prefix><NNNN>.glb`,
   zero-padded to 4 digits and numbered contiguously (no gaps). Both 0-based
   (`mesh0000.glb`) and 1-based (`mesh0001.glb`) sequences work. Each `.mesh-view`
@@ -207,10 +211,26 @@ The `scripts/` directory contains utilities for converting raw data:
 - **Elapsed time**: `data-frame-interval="6"` (seconds per frame) on a `.mesh-view`
   or `.volume-view` makes the counter beside the timeline show elapsed time as
   `MMm SSs` from 0 at the first frame instead of the frame index.
+  A fractional interval (`data-frame-interval="1.1"`) reads `SS.Ss` instead.
+  `data-frame-gaps="8:1.9"` lists steps that differ from the interval as
+  comma-separated `frame:seconds` pairs (frames counted from 0): here the step from
+  frame 8 to frame 9 takes 1.9 s, and every later time shifts with it.
+- **Reset view**: the circular-arrow button at the right end of the `.view-buttons`
+  bar (added by `main.js` next to the camera presets) animates the camera back to the
+  view it starts in: top orientation (or the preset named by `data-initial-view` on a
+  `.mesh-view`, e.g. `data-initial-view="front"` on the first membrane-dynamics viewer),
+  default zoom, panning undone. On a volume viewer
+  it also returns contrast and gamma to their base values (the sliders' `value`
+  attributes in the HTML, then the dataset's own presets). The frame being shown and
+  playback are not touched.
 - **Controls hint**: a `.view-hint` element placed inside a `.mesh-view` or
   `.volume-view` is faded in the first time the pointer enters the view and out again
   8 seconds later (later hovers show nothing); the home page uses it to list the mouse
   and keyboard controls. Views without the element show nothing.
+- **Figure captions**: a `.view-caption` element placed last in a viewer wrapper (after
+  `.view-progress`) is shown under the viewer, eLife style: a `.caption-label`
+  ("Figure 1.") and `.caption-title` in bold, then the description as plain text.
+  The numbers are written in the markup, so renumber them when adding a viewer.
 - **Several sequences in one view**: a `.mesh-view` can carry `data-sequences`, a JSON
   array of `{ "basePath", "meshCount"?, "startIndex"? }` objects, instead of a single
   `data-basepath`. The sequences are loaded and played together, aligned at frame 0
@@ -223,18 +243,21 @@ The `scripts/` directory contains utilities for converting raw data:
   `--center 0 0 0` keep their positions in the imaging volume and sequences of
   different cells stay in register with each other. The coverslip is then sized to
   1.25 x the scene footprint and seated at its lowest point, and the camera is aimed at
-  the scene centre from far enough to fit it. The scene bounds come from the `bounds`
+  the scene centre and zoomed to fit it. The scene bounds come from the `bounds`
   entry of each sequence's `metadata.json` (written by `ply_to_glb.py`); a sequence
   without that file contributes its first frame's bounding box instead.
   `data-rotation` (the `sceneRotation` option, degrees counterclockwise seen from
   above) turns the meshes and coverslip about the vertical axis, e.g. `90` to lay a
   tall field of view across a wide viewer; the camera presets are unaffected.
   `data-coverslip-scale` sets the slab footprint relative to the scene footprint
-  (default 1.25) in absolute mode. The camera distance is divided by the
-  `--viewer-zoom` CSS custom property of the view element (default 1; 1.25 brings
-  the camera 25% closer), so a stylesheet can set it per viewer and per media query,
-  as `home.css` does for phones. `data-axes-size` sets the orientation marker's size
-  in pixels (default 120) on any mesh view.
+  (default 1.25) in absolute mode. The default zoom is multiplied by the
+  `--viewer-zoom` CSS custom property of the view element (default 1; 1.25 magnifies
+  the view by 25%), so a stylesheet can set it per viewer and per media query
+  (no page sets it at present). `data-axes-size` sets the orientation marker's size
+  in pixels (default 120) on any mesh or volume view, up to 38% of the view's smaller
+  side. The marker's axis labels carry a contrasting outline (white around the dark
+  labels of the mesh views, black around the light ones of the volume views) so they
+  stay readable over the coverslip edges.
 - **Volumes** (`public/data/volumes_<cell>_<date>/`): `metadata.json` plus one `NNNN.bin.br` per
   frame (0-based), both written by `convert-zarr-to-bin.py`. The metadata must be
   valid JSON (watch for trailing commas when editing it by hand); its `files` array is
@@ -264,10 +287,16 @@ The viewers reproduce the napari / MeshVis reference renders; every constant liv
   voxels above 20% of the value range in frame 0); every other frame gets the same
   translation, so registration between frames is preserved.
   `MeshTimeseriesView` / `VolumeTimeseriesView` take
-  `showCoverslip` and `coverslipOpacity` (plus `coverslipSize` / `coverslipThickness` for
-  meshes) and expose `setCoverslipVisible()`; in `membrane-dynamics.html` a `.mesh-view` or
-  `.volume-view` element can set `data-coverslip="false"`, `data-coverslip-opacity` and,
-  for meshes, `data-coverslip-size` (mesh units).
+  `showCoverslip`, `coverslipSize` and `coverslipOpacity` (plus `coverslipThickness` for
+  meshes) and expose `setCoverslipVisible()`; a `.mesh-view` or `.volume-view` element can
+  set `data-coverslip="false"`, `data-coverslip-opacity` and `data-coverslip-size` (a
+  square footprint in mesh units, i.e. voxels; the viewers in `membrane-dynamics.html`
+  use 200).
+- Both views use an orthographic camera (`src/js/ViewCamera.js`), so parallel edges stay
+  parallel on screen and line up with the orientation marker. The default zoom fits the
+  coverslip seen from above with an 8% margin (`FIT_PADDING`); in absolute mode the mesh
+  view fits the scene and its slab from the initial view instead. The fit is redone when
+  the viewer is resized, until the user rotates, zooms or pans.
 - Viewer sizes are set by the `--viewer-width` and `--viewer-height` custom
   properties in `viewer.css` (600 x 400px by default, 300px tall on phones); a page or
   wrapper can override them, as the home page does for its 800 x 500px hero viewer.

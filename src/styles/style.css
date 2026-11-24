@@ -9,7 +9,7 @@ body {
 .content {
 	max-width: 800px;
 	margin: 0 auto;
-	padding: 20px 20px 60px 20px;
+	padding: 12px 20px 40px 20px;
 	position: relative;
 	z-index: 1;
 }
@@ -18,8 +18,8 @@ h1 {
 	font-size: 32px; 
 	color: var(--text);
 	text-align: center;
-	margin-top: 20px;
-	margin-bottom: 30px;
+	margin-top: 12px;
+	margin-bottom: 18px;
 }
 
 p {
@@ -27,8 +27,18 @@ p {
 	color: var(--text);
 	max-width: 65ch;
 	text-align: left;
-	line-height: 1.6;
-	margin: 20px auto;
+	line-height: 1.45;
+	margin: 12px auto;
+}
+
+/* Note under the title: smaller than the body text, in the accent of the
+   current theme. The max-width is scaled up by the font-size ratio so the note
+   keeps the same column as the 18px paragraphs (ch follows the font size). */
+.page-note {
+	font-size: 15px;
+	font-weight: bold;
+	color: var(--accent);
+	max-width: calc(65ch * 18 / 15);
 }
 
 h2 {
@@ -36,15 +46,40 @@ h2 {
     color: var(--text);
     text-align: left;        /* change from: start */
     margin-left: 100px;        /* add this to match p */         /* or keep these if you prefer */
-    margin-bottom: 20px;
+    margin-top: 24px;
+    margin-bottom: 8px;
 }
 
-/* Controls hint */
-.controls-hint {
-	font-size: 10pt;
-	color: var(--hint);
-	text-align: center;
-	margin-top: 40px;
+/* Tighter viewer spacing for the article page. These override the shared
+   defaults in viewer.css (which the home page also uses). */
+.content .mesh-view-wrapper,
+.content .volume-view-wrapper {
+	margin: 24px 0;
+}
+
+.content .dataset-nav {
+	padding: 5px 10px;
+	margin-bottom: 4px;
+}
+
+.content .view-buttons {
+	padding: 5px 10px;
+}
+
+.content .view-controls,
+.content .volume-controls {
+	margin-top: 8px;
+	padding: 8px 16px;
+}
+
+.content .volume-controls {
+	gap: 6px;
+}
+
+/* :not(.hidden) so the collapse-on-load rule in viewer.css still wins */
+.content .view-progress:not(.hidden) {
+	margin-top: 6px;
+	padding: 5px 12px;
 }
 
 /* Top row: home link on the left, theme toggle on the right */
@@ -72,13 +107,13 @@ h2 {
 /* Narrow screens: tighter column, headings flush with the text */
 @media (max-width: 700px) {
 	.content {
-		padding: 12px 16px 40px;
+		padding: 8px 16px 28px;
 	}
 
 	h1 {
 		font-size: 26px;
-		margin-top: 12px;
-		margin-bottom: 20px;
+		margin-top: 8px;
+		margin-bottom: 14px;
 	}
 
 	h2 {
@@ -90,7 +125,22 @@ h2 {
 		font-size: 16px;
 	}
 
-	.controls-hint {
-		margin-top: 20px;
+	.page-note {
+		font-size: 14px;
+		max-width: calc(65ch * 16 / 14);
+	}
+
+	.content .mesh-view-wrapper,
+	.content .volume-view-wrapper {
+		margin: 18px 0;
+	}
+
+	.content .view-buttons {
+		padding: 4px 8px;
+	}
+
+	.content .view-controls,
+	.content .volume-controls {
+		padding: 8px 12px;
 	}
 }

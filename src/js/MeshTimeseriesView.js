@@ -5,6 +5,9 @@ import { createSurfaceMaterial, applySurfaceMaterial, setUseVertexColors } from 
 import OrientationMarker from './OrientationMarker.js';
 import Coverslip from './Coverslip.js';
 import { BACKGROUND, COVERSLIP } from './RenderStyle.js';
+import {
+	VIEW_PRESETS, animateCamera, createViewCamera, fitZoom, poseCamera, presetOrientation, setZoom, syncControls
+} from './ViewCamera.js';
 
 // Discovery tuning: HEAD probes issued in parallel per round, and the largest
 // index offset probed before giving up (safety cap for runaway sequences).
@@ -15,11 +18,9 @@ const MAX_PROBE_OFFSET = 1 << 17;
 // so several views of one dataset probe the server only once.
 const discoveryCache = new Map();
 
-// Camera distance used until the scene is fitted (and always in centred mode)
-const DEFAULT_CAMERA_DISTANCE = 260;
-
-// Margin left around the scene when the camera is fitted to it (1 = edge to edge)
-const FIT_PADDING = 1.05;
+// Distance from the orbit target to the camera; far enough to keep the scene
+// between the near and far planes from every direction (see ViewCamera.js)
+const CAMERA_DISTANCE = 10000;
 
 /**
  * A positive number, or the fallback when the value is missing or not positive
@@ -44,7 +45,9 @@ const positiveOr = (value, fallback) => (Number(value) > 0 ? Number(value) : fal
  *   absolute positions; the coverslip and the camera are fitted to the scene
  *   bounds instead (from each sequence's metadata.json when present, otherwise
  *   from the first frames).
- * - Camera with TrackballControls orbiting the scene target
+ * - Orthographic camera (see ViewCamera.js) with TrackballControls orbiting the
+ *   scene target. Its default zoom fits the coverslip: the pad seen from above
+ *   in centred mode, the scene and its slab from the initial view otherwise
  * - Independent playback state
  */
 export default class MeshTimeseriesView {
@@ -73,10 +76,12 @@ export default class MeshTimeseriesView {
 	 * @param {number} options.coverslipScale - Absolute mode only: coverslip footprint relative to the
 	 *   scene footprint (default: 1.25); ignored when coverslipSize is given
 	 * @param {number} options.axesSize - Size of the orientation marker in pixels (default: 120)
+	 * @param {string} options.initialView - Camera preset the view starts in and the reset
+	 *   button returns to, see setView (default: 'top')
 	 *
-	 * The default camera distance is divided by the `--viewer-zoom` CSS custom property
-	 * of the view element (default 1; > 1 moves the camera closer), so a stylesheet can
-	 * set it per view and per media query.
+	 * The default zoom is multiplied by the `--viewer-zoom` CSS custom property of the
+	 * view element (default 1; > 1 magnifies), so a stylesheet can set it per view and
+	 * per media query.
 	 * @param {number} options.coverslipThickness - Coverslip thickness in mesh units (default: 12)
 	 * @param {number} options.coverslipOpacity - Opacity of the coverslip body (default: 0.5)
 	 * @param {Function} options.onLoadProgress - Callback for load progress (loaded, total)
@@ -98,7 +103,8 @@ export default class MeshTimeseriesView {
 		// null = size the slab from the scene (absolute mode) or the default pad (centred mode)
 		this.coverslipSize = Number.isFinite(options.coverslipSize) ? options.coverslipSize : null;
 		this.coverslipScale = positiveOr(options.coverslipScale, COVERSLIP.footprintScale);
-		this.axesSize = positiveOr(options.axesSize, undefined);
+		this.axesSize = options.axesSize;
+		this.initialView = VIEW_PRESETS[options.initialView] ? options.initialView : 'top';
 		this.coverslipThickness = options.coverslipThickness ?? COVERSLIP.thickness;
 		this.coverslipOpacity = options.coverslipOpacity ?? COVERSLIP.meshBodyOpacity;
 
@@ -126,6 +132,8 @@ export default class MeshTimeseriesView {
 		this.sceneBounds = null;
 		// Set once the user orbits / zooms; until then the camera follows the fit on resize
 		this.cameraTouched = false;
+		// Incremented by each camera animation so a newer one supersedes it
+		this.cameraAnimationId = 0;
 
 		// Three.js objects
 		this.scene = null;
@@ -180,11 +188,10 @@ export default class MeshTimeseriesView {
 		this.scene.background = new THREE.Color(BACKGROUND.mesh);
 
 		// Create camera
-		this.camera = new THREE.PerspectiveCamera(45, 1, 0.1, 20000);
-		// Start in the 'top' preset (looking down world Z, see setView)
-		this.camera.position.set(0, 0, DEFAULT_CAMERA_DISTANCE / this._cssZoom());
-		this.camera.up.set(0, 1, 0);
-		this.camera.lookAt(this.target);
+		this.camera = createViewCamera(CAMERA_DISTANCE);
+		// Start in the initial preset ('top' unless configured, see setView)
+		poseCamera(this.camera, this.target, this.initialView, CAMERA_DISTANCE);
+		setZoom(this.camera, this._defaultZoom());
 
 		// One surface material shared by every frame (napari-style shading + baked AO)
 		this.surfaceMaterial = createSurfaceMaterial({ useVertexColors: this.useVertexColors });
@@ -217,11 +224,11 @@ export default class MeshTimeseriesView {
 			this.controls = new TrackballControls(this.camera, this.elem);
 			this.controls.rotateSpeed = 2.0;
 			this.controls.zoomSpeed = 1.2;
-			this.controls.panSpeed = 0.8;
 			this.controls.staticMoving = false;
 			this.controls.dynamicDampingFactor = 0.6;
 			this.controls.target = this.target;
 			this.controls.addEventListener('start', () => { this.cameraTouched = true; });
+			syncControls(this.controls, CAMERA_DISTANCE);
 		}
 
 		// Create orientation marker
@@ -260,6 +267,21 @@ export default class MeshTimeseriesView {
 	 */
 	_cssZoom() {
 		return positiveOr(parseFloat(getComputedStyle(this.elem).getPropertyValue('--viewer-zoom')), 1);
+	}
+
+	/**
+	 * Zoom of the centred mode's default view: the square coverslip pad, seen from
+	 * above, fills the view with the fit margin around it. The same zoom is used
+	 * from every preset, so the cell keeps its size when the view is turned.
+	 * (Absolute mode fits the scene instead, see _fitCamera.)
+	 * @private
+	 * @returns {number}
+	 */
+	_defaultZoom() {
+		// Half extent across and up the screen of the pad after the scene rotation
+		const turn = Math.abs(Math.cos(this.sceneRotation)) + Math.abs(Math.sin(this.sceneRotation));
+		const half = (this.coverslipSize ?? COVERSLIP.padSize) / 2 * turn;
+		return fitZoom(this.camera, half, half) * this._cssZoom();
 	}
 
 	/**
@@ -751,67 +773,49 @@ export default class MeshTimeseriesView {
 	}
 
 	/**
-	 * Absolute mode: point the camera at the scene centre (in world space, i.e.
-	 * after the scene rotation) from the current direction, far enough for the
-	 * cells and the slab to fill the view, divided by the CSS `--viewer-zoom`
+	 * Absolute mode: aim the camera at the scene centre from its current
+	 * direction, zoomed to fit the scene (see _sceneFit)
 	 * @private
 	 */
 	_fitCamera() {
-		const bounds = this.sceneBounds;
-		if (!bounds) return;
-
-		// Moving the pivot and the camera by the same offset keeps the camera's
-		// orientation, so the fit below can use its current quaternion
-		const direction = this.camera.position.clone().sub(this.target);
-		if (direction.lengthSq() === 0) direction.set(0, 0, 1);
-		direction.normalize();
-		this.sceneRoot.updateWorldMatrix(true, false);
-		this.target.copy(bounds.getCenter(new THREE.Vector3())).applyMatrix4(this.sceneRoot.matrixWorld);
-
-		// Fit box: the scene plus the coverslip (local space, before rotation)
-		const fitBox = bounds.clone();
-		if (this.coverslip && this.showCoverslip) {
-			fitBox.union(new THREE.Box3().setFromCenterAndSize(
-				this.coverslip.group.position,
-				new THREE.Vector3(this.coverslip.sizeX, this.coverslip.sizeY, this.coverslip.thickness)
-			));
-		}
-		const distance = this._fitDistance(fitBox, this.sceneRoot.matrixWorld) / this._cssZoom();
-		this.camera.position.copy(this.target).addScaledVector(direction, distance);
-		this.camera.lookAt(this.target);
+		if (!this.sceneBounds) return;
+		const { pivot, zoom } = this._sceneFit(this.camera.quaternion);
+		// Moving the camera with its pivot keeps its orientation
+		this.camera.position.sub(this.target).add(pivot);
+		this.target.copy(pivot);
+		setZoom(this.camera, zoom);
 		if (this.controls) this.controls.update();
 	}
 
 	/**
-	 * Called by the shared renderer when the view's aspect ratio changes (window
-	 * resize, phone rotation). In absolute mode the fit depends on the aspect, so
-	 * redo it as long as the user has not taken over the camera.
-	 */
-	onViewResized() {
-		if (this.centerFrames || this.cameraTouched || this.isDisposed) return;
-		this._fitCamera();
-	}
-
-	/**
-	 * Camera distance from the target at which a box just fits the view from the
-	 * camera's current orientation: the box corners are measured in camera space
-	 * (sideways, up and toward the camera) and the tighter of the horizontal and
-	 * vertical fields of view decides
+	 * Absolute mode: the orbit point and the zoom of the view that fits the cells
+	 * and the slab from a given camera orientation, times the CSS `--viewer-zoom`.
+	 * The box corners are measured in camera space (sideways and up) and the
+	 * tighter of the view's width and height decides.
 	 * @private
-	 * @param {THREE.Box3} box - Box to fit, in the space `boxToWorld` maps from
-	 * @param {THREE.Matrix4} boxToWorld - Transform of the box's space into world space
-	 * @returns {number}
+	 * @param {THREE.Quaternion} orientation - Camera orientation to fit from
+	 * @returns {{pivot: THREE.Vector3, zoom: number}} The pivot is the scene centre
+	 *   in world space, i.e. after the scene rotation
 	 */
-	_fitDistance(box, boxToWorld) {
-		// The shared renderer keeps camera.aspect in step with the view element
-		const vFov = THREE.MathUtils.degToRad(this.camera.fov);
-		const hFov = 2 * Math.atan(Math.tan(vFov / 2) * this.camera.aspect);
+	_sceneFit(orientation) {
+		const bounds = this.sceneBounds;
+		this.sceneRoot.updateWorldMatrix(true, false);
+		const toWorld = this.sceneRoot.matrixWorld;
+		const pivot = bounds.getCenter(new THREE.Vector3()).applyMatrix4(toWorld);
 
-		// Camera basis: x right, y up, z toward the camera
-		const toCamera = this.camera.quaternion.clone().invert();
+		// Fit box: the scene plus the coverslip (local space, before rotation)
+		const box = bounds.clone();
+		if (this.coverslip && this.showCoverslip) {
+			box.union(new THREE.Box3().setFromCenterAndSize(
+				this.coverslip.group.position,
+				new THREE.Vector3(this.coverslip.sizeX, this.coverslip.sizeY, this.coverslip.thickness)
+			));
+		}
+
+		// Camera basis: x right, y up
+		const toCamera = orientation.clone().invert();
 		let halfWidth = 0;
 		let halfHeight = 0;
-		let depth = 0;
 		const corner = new THREE.Vector3();
 		for (let i = 0; i < 8; i++) {
 			corner.set(
@@ -819,15 +823,28 @@ export default class MeshTimeseriesView {
 				i & 2 ? box.max.y : box.min.y,
 				i & 4 ? box.max.z : box.min.z
 			);
-			corner.applyMatrix4(boxToWorld).sub(this.target).applyQuaternion(toCamera);
+			corner.applyMatrix4(toWorld).sub(pivot).applyQuaternion(toCamera);
 			halfWidth = Math.max(halfWidth, Math.abs(corner.x));
 			halfHeight = Math.max(halfHeight, Math.abs(corner.y));
-			depth = Math.max(depth, corner.z);
 		}
 
-		const fitWidth = halfWidth / Math.tan(hFov / 2);
-		const fitHeight = halfHeight / Math.tan(vFov / 2);
-		return Math.max(fitWidth, fitHeight) * FIT_PADDING + depth;
+		return { pivot, zoom: fitZoom(this.camera, halfWidth, halfHeight) * this._cssZoom() };
+	}
+
+	/**
+	 * Called by the shared renderer when the view element changes size (window
+	 * resize, phone rotation). The default zoom depends on the aspect, so redo it
+	 * as long as the user has not taken over the camera.
+	 */
+	onViewResized() {
+		if (this.isDisposed) return;
+		syncControls(this.controls, CAMERA_DISTANCE);
+		if (this.cameraTouched) return;
+		if (this.centerFrames) {
+			setZoom(this.camera, this._defaultZoom());
+		} else {
+			this._fitCamera();
+		}
 	}
 
 	/**
@@ -975,89 +992,48 @@ export default class MeshTimeseriesView {
 	 * @param {string} viewName - One of: 'iso', 'top', 'bottom', 'front', 'back', 'left', 'right'
 	 */
 	setView(viewName) {
-		const presets = {
-			iso:    { pos: [1, -1, 1], up: [0, 0, 1] },
-			top:    { pos: [0, 0, 1], up: [0, 1, 0] },
-			bottom: { pos: [0, 0, -1], up: [0, -1, 0] },
-			front:  { pos: [0, -1, 0], up: [0, 0, 1] },
-			back:   { pos: [0, 1, 0], up: [0, 0, 1] },
-			left:   { pos: [-1, 0, 0], up: [0, 0, 1] },
-			right:  { pos: [1, 0, 0], up: [0, 0, 1] }
-		};
-
-		const preset = presets[viewName];
-		if (!preset) return;
-
-		// Preserve current zoom distance (from the orbit target)
-		const distance = this.camera.position.distanceTo(this.target);
-
-		// Calculate target position (normalized direction * distance, around the target)
-		const targetPos = new THREE.Vector3(...preset.pos).normalize().multiplyScalar(distance).add(this.target);
-		const targetUp = new THREE.Vector3(...preset.up);
-
-		this._animateCameraTo(targetPos, targetUp);
+		// Turn about the orbit target; the zoom is left as it is
+		if (VIEW_PRESETS[viewName]) this._animateCameraTo(viewName);
 	}
 
 	/**
-	 * Animate camera to target position with smooth transition, orbiting the view target
-	 * @param {THREE.Vector3} targetPosition - Target camera position
-	 * @param {THREE.Vector3} targetUp - Target up vector
+	 * Return the camera to the view it starts in, with the same animation as the
+	 * presets: the initial orientation ('top' unless configured) at the default zoom,
+	 * with any panning undone.
+	 * The frame being shown and playback are left alone.
+	 */
+	resetView() {
+		let end;
+		if (this.centerFrames) {
+			// Centred mode orbits the origin at the fixed default zoom
+			end = { pivot: new THREE.Vector3(), zoom: this._defaultZoom() };
+		} else if (this.sceneBounds) {
+			// Absolute mode: the default is the fit seen from the initial preset
+			end = this._sceneFit(presetOrientation(this.initialView));
+		} else {
+			// Absolute mode before its bounds are known: keep the current pivot
+			end = { zoom: this._defaultZoom() };
+		}
+		this._animateCameraTo(this.initialView, end);
+		// Back on the default view, so it follows the fit on resize again
+		this.cameraTouched = false;
+	}
+
+	/**
+	 * Animate the camera to a preset, superseding any animation still running
+	 * @param {string} presetName - Key of VIEW_PRESETS
+	 * @param {Object} [end] - Orbit point and zoom to end on (see animateCamera);
+	 *     the current ones when omitted
 	 * @private
 	 */
-	_animateCameraTo(targetPosition, targetUp) {
-		const duration = 700; // ms
-		const startTime = performance.now();
-
-		// Start state relative to the orbit pivot (the live target, shared with the controls)
-		const pivot = this.target;
-		const startOffset = this.camera.position.clone().sub(pivot);
-		const startUp = this.camera.up.clone();
-		const distance = startOffset.length();
-
-		// Normalize directions for spherical interpolation
-		const startDir = startOffset.clone().normalize();
-		const endDir = targetPosition.clone().sub(pivot).normalize();
-
-		// Use quaternion to rotate from start direction to end direction
-		const rotationQuat = new THREE.Quaternion();
-		rotationQuat.setFromUnitVectors(startDir, endDir);
-
-		const animate = () => {
-			if (this.isDisposed) return;
-
-			const elapsed = performance.now() - startTime;
-			const t = Math.min(elapsed / duration, 1);
-
-			// Ease-out cubic
-			const eased = 1 - Math.pow(1 - t, 3);
-
-			// Interpolate position along spherical path (constant distance)
-			const currentQuat = new THREE.Quaternion();
-			currentQuat.slerpQuaternions(new THREE.Quaternion(), rotationQuat, eased);
-
-			const currentDir = startDir.clone().applyQuaternion(currentQuat);
-			this.camera.position.copy(pivot).addScaledVector(currentDir, distance);
-
-			// Interpolate up vector
-			this.camera.up.lerpVectors(startUp, targetUp, eased).normalize();
-
-			// Make camera look at the pivot
-			this.camera.lookAt(pivot);
-
-			if (t < 1) {
-				requestAnimationFrame(animate);
-			} else {
-				// Ensure final state is exact
-				this.camera.position.copy(targetPosition);
-				this.camera.up.copy(targetUp);
-				this.camera.lookAt(pivot);
-
-				// Reset controls to pick up new camera state
-				if (this.controls) this.controls.update();
-			}
-		};
-
-		requestAnimationFrame(animate);
+	_animateCameraTo(presetName, end = {}) {
+		const animationId = ++this.cameraAnimationId;
+		animateCamera(
+			this.camera, this.target, CAMERA_DISTANCE, { preset: presetName, ...end },
+			() => !this.isDisposed && animationId === this.cameraAnimationId,
+			// Let the controls pick up the new camera state
+			() => { if (this.controls) this.controls.update(); }
+		);
 	}
 
 	/**

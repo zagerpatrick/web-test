@@ -14,6 +14,9 @@ bounding box of the whole sequence, or --center), so registered meshes keep
 their frame-to-frame positioning in the viewer. The offset and the sequence
 bounds are written to <output-dir>/metadata.json.
 
+--num-meshes N (batch_convert(num_meshes=N)) converts only the first N meshes;
+the "sequence" above is then those N frames.
+
 Per-vertex ambient occlusion (AO) is baked with the same cosine-weighted
 hemisphere ray casting as lsprocess.mesh_vis.napari_ao and stored in the
 alpha channel of COLOR_0 as *visibility*: alpha = 1 - ao (1.0 = fully exposed,
@@ -526,10 +529,11 @@ def batch_convert(
     ao_rays: int = AO_RAYS,
     ao_seed: int = AO_SEED,
     center: np.ndarray | None = None,
-    label_type: str = "auto"
+    label_type: str = "auto",
+    num_meshes: int | None = None
 ) -> None:
     """
-    Batch convert all PLY files in a directory to GLB.
+    Batch convert the PLY files in a directory to GLB.
 
     Every frame is translated by one shared offset so registered sequences keep
     their frame-to-frame positioning: the centre of the bounding box of the
@@ -548,7 +552,13 @@ def batch_convert(
         center: Optional (3,) offset in (z, y, x) array order overriding the
             sequence bounding-box centre
         label_type: "auto", "vertex" or "face" (see resolve_face_labels)
+        num_meshes: Number of meshes to convert, starting from the first in
+            sorted filename order. None = all. The shared offset, the bounds
+            and metadata.json then describe only the converted frames.
     """
+    if num_meshes is not None and num_meshes < 1:
+        raise ValueError(f"num_meshes ({num_meshes}) must be at least 1")
+
     global LABEL_COLORS
     if label_colors is not None:
         LABEL_COLORS.update(label_colors)
@@ -575,8 +585,22 @@ def batch_convert(
             f"Mismatch: {len(ply_files)} PLY files, {len(all_labels)} label arrays"
         )
 
+    # Optionally keep only the first num_meshes frames (labels stay paired by index)
+    total_meshes = len(ply_files)
+    if num_meshes is not None and num_meshes < total_meshes:
+        ply_files = ply_files[:num_meshes]
+        all_labels = all_labels[:num_meshes]
+    print(f"Meshes: {len(ply_files)} of {total_meshes}")
+
     # Create output directory
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    # GLBs left over from an earlier, longer run would still be picked up by the
+    # viewer (it counts frames on the server) but sit at that run's offset
+    stale = sorted({p.name for p in output_dir.glob("*.glb")} - {f"{p.stem}.glb" for p in ply_files})
+    if stale:
+        print(f"WARNING: {output_dir} holds {len(stale)} GLB file(s) this run will not rewrite "
+              f"({stale[0]} .. {stale[-1]}); delete them if they belong to an earlier run")
 
     # One shared offset for the whole sequence (z, y, x), so registered frames
     # keep their relative positions instead of each being re-centred on itself
@@ -610,6 +634,7 @@ def batch_convert(
 
     metadata = {
         "frameCount": len(ply_files),
+        "sourceFrameCount": total_meshes,
         "centering": centering,
         "center": _xyz(center),
         "centerArrayOrder": [float(c) for c in center],
@@ -698,8 +723,17 @@ if __name__ == "__main__":
         help="Shared offset subtracted from every frame, in (z, y, x) voxel order "
              "(default: centre of the whole sequence's bounding box)"
     )
+    parser.add_argument(
+        "--num-meshes", "-n",
+        type=int,
+        default=None,
+        help="Number of meshes to convert, starting from the first (default: all)"
+    )
 
     args = parser.parse_args()
+
+    if args.num_meshes is not None and args.num_meshes < 1:
+        parser.error(f"--num-meshes ({args.num_meshes}) must be at least 1")
 
     batch_convert(
         args.mesh_dir,
@@ -710,5 +744,6 @@ if __name__ == "__main__":
         ao_rays=0 if args.no_ao else args.ao_rays,
         ao_seed=args.ao_seed,
         center=args.center,
-        label_type=args.label_type
+        label_type=args.label_type,
+        num_meshes=args.num_meshes
     )

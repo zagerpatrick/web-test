@@ -15,12 +15,10 @@ import { SURFACE_GREY, LIGHT, LIGHT_DIR_VIEW, AO_STRENGTH, AO_COLOR } from './Re
 
 const surfaceVertexShader = /* glsl */`
 varying vec3 vNormalView;
-varying vec3 vPositionView;
 varying vec4 vColor4;
 
 void main() {
 	vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
-	vPositionView = mvPosition.xyz;
 	vNormalView = normalMatrix * normal;
 #if defined( USE_COLOR_ALPHA )
 	vColor4 = color;
@@ -45,7 +43,6 @@ uniform float uAoStrength;
 uniform vec3 uAoColor;
 
 varying vec3 vNormalView;
-varying vec3 vPositionView;
 varying vec4 vColor4;
 
 void main() {
@@ -58,7 +55,7 @@ void main() {
 	n = gl_FrontFacing ? n : -n;
 
 	vec3 L = normalize(uLightDirView);   // toward the light (fixed relative to the camera)
-	vec3 V = normalize(-vPositionView);  // toward the eye
+	vec3 V = vec3(0.0, 0.0, 1.0);        // toward the eye (the camera is orthographic)
 
 	// Blinn-Phong: I = base * (Ia + Id * n.L) + Is * (n.H)^shininess, specular only where lit
 	float diffuse = max(dot(n, L), 0.0);

@@ -10,9 +10,9 @@
    the WebGL backgrounds of the mesh and volume renders.
 
    A page (or a single wrapper) can override --viewer-width / --viewer-height to
-   resize its viewers and --viewer-zoom to move the fitted camera closer (> 1)
-   or further (< 1); the mesh view reads --viewer-zoom from its element at fit
-   time. */
+   resize its viewers and --viewer-zoom to magnify (> 1) or shrink (< 1) the
+   default view, which otherwise fits the coverslip with a small margin; the
+   mesh view reads --viewer-zoom from its element at fit time. */
 :root {
 	--accent: #0077bb;
 	--accent-hover: #1a8fd6;
@@ -183,14 +183,18 @@ input[type="range"] {
    pointer events, so the trackball controls underneath are unaffected. */
 .view-hint {
 	position: absolute;
-	left: 50%;
+	/* Centred with auto margins between the insets rather than left: 50% plus a
+	   transform, which would cap the shrink-to-fit width at half the view */
+	left: 14px;
+	right: 14px;
 	top: 24px;
-	transform: translateX(-50%);
+	margin-inline: auto;
+	width: fit-content;
+	max-width: 440px;
 	display: flex;
 	flex-wrap: wrap;
 	justify-content: center;
 	gap: 4px 18px;
-	max-width: calc(100% - 28px);
 	padding: 8px 16px;
 	border-radius: 8px;
 	/* Accent of the current theme (blue in light, persimmon in dark), slightly
@@ -339,6 +343,18 @@ input[type="range"] {
 	background: #000000;
 }
 
+/* Reset button: pushed to the bar's right end (the viewer's top-right corner).
+   An empty slot of the same width on the left keeps the presets centred. */
+.view-buttons::before {
+	content: '';
+	width: 34px;
+	margin-right: auto;
+}
+
+.view-reset {
+	margin-left: auto;
+}
+
 .view-btn {
 	background: transparent;
 	color: var(--text-soft);
@@ -369,8 +385,9 @@ input[type="range"] {
 	background: rgba(0, 0, 0, 0.25);
 }
 
-/* Dataset navigation: header bar above the viewer with prev/next arrows and the
-   dataset label beside them (eLife figure-supplement style) */
+/* Dataset navigation: header bar above the viewer with prev/next arrows, the
+   "Dataset i of n" counter beside them and the dataset's name after that
+   (eLife figure-supplement style) */
 .dataset-nav {
 	display: flex;
 	align-items: center;
@@ -434,8 +451,41 @@ input[type="range"] {
 	color: var(--text-soft);
 	margin-left: 6px;
 	white-space: nowrap;
+}
+
+/* Name of the dataset being shown ("Cell 17 07/29/2026"); the part that gives
+   way when the bar is too narrow for both */
+.dataset-name {
+	font-size: 12pt;
+	color: var(--label);
+	margin-left: 6px;
+	min-width: 0;
+	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;
+}
+
+/* Figure caption under a viewer (eLife style): a bold "Figure N." label and
+   title followed by the description, in a smaller sans-serif, left-aligned and
+   as wide as the viewer. Placed last in the wrapper, after the progress bar,
+   which collapses once the data has loaded. */
+.view-caption {
+	width: 100%;
+	max-width: var(--viewer-width);
+	box-sizing: border-box;
+	margin-top: 10px;
+	padding: 0 2px;
+	font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+	font-size: 14px;
+	line-height: 1.45;
+	color: var(--text-soft);
+	text-align: left;
+}
+
+.caption-label,
+.caption-title {
+	font-weight: bold;
+	color: var(--text);
 }
 
 /* Per-view progress bar */
@@ -760,6 +810,16 @@ input[type="range"] {
 	.view-btn svg {
 		width: 26px;
 		height: 26px;
+	}
+
+	/* No room for the balancing slot: the free space is split either side of the
+	   presets instead, which leaves them slightly left of centre */
+	.view-buttons::before {
+		display: none;
+	}
+
+	.view-buttons > .view-btn:first-child {
+		margin-left: auto;
 	}
 
 	.volume-control-row {
