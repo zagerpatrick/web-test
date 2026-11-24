@@ -13,6 +13,7 @@ A Three.js web application for viewing timeseries of 3D meshes and volumetric im
 │   │   ├── SharedRenderer.js
 │   │   ├── MeshTimeseriesView.js
 │   │   ├── VolumeTimeseriesView.js
+│   │   ├── MeshLoadPool.js # Loads mesh frames in Web Workers (meshLoadWorker.js)
 │   │   ├── ViewCamera.js   # Orthographic camera, fit-to-coverslip zoom and pan speed shared by both views
 │   │   ├── dataSource.js   # Maps `data/...` paths to where the datasets are hosted
 │   │   ├── theme.js        # Light / dark theme toggle
@@ -110,8 +111,10 @@ npm run data:push -- --prune                # also delete bucket files whose loc
 npm run data:push -- --all                  # upload everything again
 ```
 
-- Use `--prune` after re-exporting a mesh sequence with fewer frames. The viewer counts
-  frames by probing the server, so leftover frames from the old export would still play.
+- Use `--prune` after re-exporting a mesh sequence with fewer frames, to delete the old
+  export's leftover frames from the bucket. The viewer plays the files listed in the
+  folder's `metadata.json`, so the leftovers no longer show, but a mesh folder without
+  a `metadata.json` has its frames counted on the server and would still play them.
 - The script uploads through [Wrangler](https://developers.cloudflare.com/workers/wrangler/),
   Cloudflare's CLI, which `npx` downloads on first use. Log in once with
   `npx wrangler login`.
@@ -128,6 +131,32 @@ for up to 4 hours. New files are live straight away. A file replaced under the s
 name can be served stale for that long; to refresh it sooner, purge the cache in the
 Cloudflare dashboard: the `patrickzager.com` zone > Caching > Configuration > Purge
 Cache > Custom Purge > Hostname > `data.patrickzager.com`.
+
+What that means for a visitor, and what the viewers add to it:
+
+- **Downloads** are cached by the browser's HTTP cache only; the site keeps nothing
+  on disk itself. Within the 4 hours a page refresh, or a switch back to a dataset
+  shown earlier, reads every mesh, volume frame and `metadata.json` from that cache
+  without a request. After 4 hours the browser asks whether each file has changed
+  and downloads only the ones that have.
+- **In memory** a viewer holds the dataset it is showing: every mesh frame of a mesh
+  viewer; for a volume viewer the compressed bytes of every frame plus up to 16 decoded
+  ones. Switching dataset releases all of it. Keeping earlier datasets around would
+  make switching back instant but costs about 430 MB per mesh dataset and about
+  200 MB per volume dataset, on a page that already holds more than 1 GB.
+- **Preparing a mesh frame** (glTF parsing, meshopt decoding, smooth normals) is not
+  something a cache keeps, so it is redone on every load. It runs in Web Workers
+  (`src/js/MeshLoadPool.js`), which is why a cached mesh dataset reappears in a
+  fraction of a second. Volume frames are likewise decoded in workers, on demand.
+- **The list of mesh frames** comes from the folder's `metadata.json`, which is cached
+  like any other file. Only a mesh folder without one is counted with `HEAD` requests,
+  which no cache keeps (see [Data layout](#data-layout)).
+
+To see a replaced file straight away while checking an upload, purge Cloudflare's
+cache as above, then load the page with the browser's own cache switched off
+(DevTools > Network > "Disable cache"). A hard reload (Shift + Reload) is not enough:
+in Chrome it re-fetches the `metadata.json` files but still takes the frames from
+the cache.
 
 ### Working without the local data
 
@@ -162,8 +191,8 @@ npx wrangler r2 bucket domain add patrickzager-data --domain data.patrickzager.c
   `data.patrickzager.com`, cache eligibility is "Eligible for cache". How long a file
   stays cached follows its `Cache-Control` header (see [Caching](#caching)). Without
   the rule everything still works, but every download is read from R2 instead of the
-  cache. The `HEAD` requests the mesh viewer uses to count frames are never cached,
-  so those always reach R2.
+  cache. The `HEAD` requests with which the mesh viewer counts the frames of a folder
+  that has no `metadata.json` are never cached, so those always reach R2.
 
 ## Data Processing
 
@@ -190,9 +219,14 @@ The `scripts/` directory contains utilities for converting raw data:
   zero-padded to 4 digits and numbered contiguously (no gaps). Both 0-based
   (`mesh0000.glb`) and 1-based (`mesh0001.glb`) sequences work. Each `.mesh-view`
   in `src/membrane-dynamics.html` names the prefix with `data-basepath` (e.g. `data/meshes/mesh`).
-  The number of frames is discovered automatically from the server, so swapping in a
-  new sequence needs no HTML edits. `data-meshcount` and `data-startindex` are optional
-  overrides for the discovered values. Vertex colours follow the Paul Tol palette of the
+  The frames are the files named `<prefix><NNNN>.glb` in the `files` list of the folder's
+  `metadata.json` (written by `ply_to_glb.py`), played in the order listed, so swapping
+  in a new sequence needs no HTML edits. A listed file that is missing from the end of
+  the sequence shortens it, with a warning in the console; one missing in the middle
+  leaves an empty frame. A folder without a `metadata.json` has its frames counted on
+  the server instead, which takes a couple of dozen uncached `HEAD` requests before the
+  first mesh can load, and needs the contiguous numbering. `data-meshcount` and
+  `data-startindex` are optional overrides. Vertex colours follow the Paul Tol palette of the
   MeshVis notebooks (grey `#BBBBBB`, blue `#0077BB`, red `#CC3311`) and their alpha
   channel stores baked ambient occlusion as visibility (`alpha = 1 - ao`). GLBs converted
   before AO baking existed have alpha 1 and simply render without AO darkening until they
@@ -275,7 +309,8 @@ The viewers reproduce the napari / MeshVis reference renders; every constant liv
 - Surfaces use a custom shader (`src/js/MaterialFactory.js`) implementing vispy's
   Blinn-Phong model (ambient 0.75, diffuse 0.30, specular 0.20, shininess 1) lit from a
   fixed view-space direction (up-left, toward the viewer), with no tone mapping. Smooth
-  normals are rebuilt at load time from the per-face GLB geometry.
+  normals are rebuilt at load time from the per-face GLB geometry
+  (`src/js/SmoothNormals.js`, run by the mesh load workers).
 - Baked ambient occlusion darkens the lit colour toward a warm tint
   (`mix(lit, (0.15, 0.13, 0.11), 0.6 * ao)`), like napari's AO overlay layer.
 - The coverslip (`src/js/Coverslip.js`) is a translucent `#D3D3D3` slab with a thick

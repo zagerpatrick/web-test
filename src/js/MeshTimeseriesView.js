@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { TrackballControls } from 'three/addons/controls/TrackballControls.js';
 import sharedRenderer from './SharedRenderer.js';
+import meshLoadPool, { buildMeshObject } from './MeshLoadPool.js';
 import { createSurfaceMaterial, applySurfaceMaterial, setUseVertexColors } from './MaterialFactory.js';
 import OrientationMarker from './OrientationMarker.js';
 import Coverslip from './Coverslip.js';
@@ -17,6 +18,26 @@ const MAX_PROBE_OFFSET = 1 << 17;
 // Discovery results shared between views that point at the same file sequence,
 // so several views of one dataset probe the server only once.
 const discoveryCache = new Map();
+
+// The metadata.json of each mesh folder (written by scripts/ply_to_glb.py), as a
+// promise per URL, shared between the views and sequences of a page so each file
+// is read once. A folder without one resolves to null. Unlike the HEAD probes of
+// discovery, this is an ordinary GET that the browser and Cloudflare cache.
+const metadataCache = new Map();
+
+/**
+ * Fetch and parse a folder's metadata.json
+ * @param {string} url
+ * @returns {Promise<Object|null>} null when the folder has no such file
+ */
+async function loadFolderMetadata(url) {
+	const response = await fetch(url);
+	// A missing file is a 404, or the HTML page that Vite's dev / preview servers
+	// answer with instead (HTTP 200)
+	const type = response.headers.get('content-type') || '';
+	if (!response.ok || type.includes('text/html')) return null;
+	return response.json();
+}
 
 // Distance from the orbit target to the camera; far enough to keep the scene
 // between the near and far planes from every direction (see ViewCamera.js)
@@ -56,7 +77,8 @@ export default class MeshTimeseriesView {
 	 * @param {Object} options - View configuration
 	 * @param {HTMLElement} options.elem - DOM element to render into
 	 * @param {string} options.basePath - Base path for mesh files (e.g., 'data/meshes/mesh')
-	 * @param {number} [options.meshCount] - Number of meshes; omit to discover the count from the server
+	 * @param {number} [options.meshCount] - Number of meshes; omit to take the frames from the
+	 *   `files` list of the folder's metadata.json, or, without one, to count them by probing the server
 	 * @param {number} [options.startIndex] - Index of the first file (0 or 1); omit to auto-detect
 	 * @param {Object[]} [options.sequences] - Several sequences rendered together, each
 	 *   `{ basePath, meshCount?, startIndex? }`; takes precedence over basePath / meshCount / startIndex
@@ -127,6 +149,8 @@ export default class MeshTimeseriesView {
 		// Incremented by setDataset() so loads still in flight for a previous dataset
 		// can recognise they are stale and discard their results.
 		this.loadGeneration = 0;
+		// Cancels the downloads of the dataset being loaded (see _loadAllMeshes)
+		this.loadAbort = null;
 		// Bounds the coverslip is seated on: the first frame (centred mode) or the union
 		// of the sequence bounds (absolute mode, also used to fit the camera)
 		this.sceneBounds = null;
@@ -168,6 +192,11 @@ export default class MeshTimeseriesView {
 				basePath: spec.basePath,
 				meshCount: Number.isFinite(explicitCount) && explicitCount > 0 ? Math.floor(explicitCount) : 0,
 				startIndex: Number.isInteger(spec.startIndex) ? spec.startIndex : null,
+				// One URL per frame when the folder's metadata.json lists the files;
+				// otherwise the URLs follow from basePath and startIndex (see _frameUrl)
+				frameUrls: null,
+				// Where the frame count came from, for the console summary
+				countSource: '',
 				meshes: [],
 				frameBounds: []
 			};
@@ -237,6 +266,9 @@ export default class MeshTimeseriesView {
 		// Register with shared renderer
 		sharedRenderer.addView(this);
 
+		// Start the mesh load workers now, so they are up when the frame list arrives
+		meshLoadPool.addClient(this);
+
 		// Resolve the mesh counts (explicit or discovered), then load
 		this._start();
 	}
@@ -301,7 +333,7 @@ export default class MeshTimeseriesView {
 
 			this.meshCount = Math.max(0, ...this.sequences.map((seq) => seq.meshCount));
 			const summary = this.sequences
-				.map((seq) => `${seq.meshCount} meshes at ${seq.basePath} (start index ${seq.startIndex})`)
+				.map((seq) => `${seq.meshCount} meshes at ${seq.basePath} (start index ${seq.startIndex}, ${seq.countSource})`)
 				.join('; ');
 			console.log(`MeshTimeseriesView: ${summary}`);
 			this.onCountResolved(this.meshCount, this.sequences[0].startIndex);
@@ -320,24 +352,91 @@ export default class MeshTimeseriesView {
 	}
 
 	/**
-	 * Fill in one sequence's numbering origin and count
+	 * Fill in one sequence's frames: its numbering origin and count, and the file
+	 * of each frame when the folder lists them
 	 * @private
 	 * @param {Object} seq
 	 */
 	async _resolveSequence(seq) {
 		if (seq.meshCount > 0) {
 			// Explicit count: only the numbering origin needs detecting
+			seq.countSource = 'count given';
 			if (seq.startIndex === null) {
 				const detected = await this._detectStartIndex(seq);
 				seq.startIndex = detected ?? 1;
 			}
 		} else {
-			const { startIndex, count } = await this._discoverMeshRange(seq);
-			seq.startIndex = startIndex;
-			seq.meshCount = count;
+			// The folder's own file list costs one cacheable request; counting the
+			// files on the server takes a couple of dozen HEAD requests in several
+			// rounds, none of which any cache keeps, before the first mesh can load.
+			const listed = await this._listFrames(seq);
+			if (listed) {
+				seq.countSource = 'listed in metadata.json';
+				seq.frameUrls = listed.urls;
+				seq.startIndex = listed.startIndex;
+				seq.meshCount = listed.urls.length;
+			} else {
+				seq.countSource = 'counted on the server';
+				const { startIndex, count } = await this._discoverMeshRange(seq);
+				seq.startIndex = startIndex;
+				seq.meshCount = count;
+			}
 		}
 		// Nothing will ever load for an empty sequence
 		if (seq.meshCount === 0) seq._resolveFirstFrame(null);
+	}
+
+	/**
+	 * The metadata.json next to a sequence's meshes, written by scripts/ply_to_glb.py
+	 * (frame files, whole-sequence bounds). Fetched once per page and folder.
+	 * @private
+	 * @param {Object} seq
+	 * @returns {Promise<Object|null>} null when the folder has none or it cannot be read
+	 */
+	_fetchSequenceMetadata(seq) {
+		const slash = seq.basePath.lastIndexOf('/');
+		if (slash === -1) return Promise.resolve(null);
+		const url = `${seq.basePath.slice(0, slash + 1)}metadata.json`;
+		if (!metadataCache.has(url)) {
+			metadataCache.set(url, loadFolderMetadata(url).catch((error) => {
+				// A failed request or a malformed file: do without, and ask again next time
+				metadataCache.delete(url);
+				console.warn(`MeshTimeseriesView: could not read ${url}:`, error);
+				return null;
+			}));
+		}
+		return metadataCache.get(url);
+	}
+
+	/**
+	 * A sequence's frames as the `files` list of its folder's metadata.json gives
+	 * them: frame i is the i-th listed file named `<prefix><digits><extension>`,
+	 * whatever its number, so the list rather than the numbering decides the order.
+	 * An explicit startIndex skips the files numbered below it.
+	 * @private
+	 * @param {Object} seq
+	 * @returns {Promise<{urls: string[], startIndex: number}|null>} null when the
+	 *   folder has no metadata.json or it lists no file of this sequence
+	 */
+	async _listFrames(seq) {
+		const metadata = await this._fetchSequenceMetadata(seq);
+		if (!Array.isArray(metadata?.files)) return null;
+
+		const slash = seq.basePath.lastIndexOf('/');
+		const folder = seq.basePath.slice(0, slash + 1);
+		const prefix = seq.basePath.slice(slash + 1);
+		const urls = [];
+		let startIndex = null;
+		for (const name of metadata.files) {
+			if (typeof name !== 'string' || !name.startsWith(prefix) || !name.endsWith(this.fileExtension)) continue;
+			const digits = name.slice(prefix.length, name.length - this.fileExtension.length);
+			if (!/^\d+$/.test(digits)) continue;
+			const number = Number(digits);
+			if (seq.startIndex !== null && number < seq.startIndex) continue;
+			if (startIndex === null) startIndex = number;
+			urls.push(folder + name);
+		}
+		return urls.length > 0 ? { urls, startIndex } : null;
 	}
 
 	/**
@@ -356,7 +455,8 @@ export default class MeshTimeseriesView {
 	 * controls and lights. The frame resets to 0; camera orientation is preserved.
 	 * @param {Object} options
 	 * @param {string} [options.basePath] - New file prefix (e.g. 'data/meshes2/mesh')
-	 * @param {number} [options.meshCount] - Explicit count; omit to discover from the server
+	 * @param {number} [options.meshCount] - Explicit count; omit to take the frames from the
+	 *   folder's metadata.json or, without one, to count them on the server
 	 * @param {number} [options.startIndex] - Explicit numbering origin; omit to detect
 	 * @param {Object[]} [options.sequences] - Several sequences rendered together (see constructor)
 	 * @param {boolean} [options.useVertexColors] - Defaults to the current setting
@@ -365,6 +465,7 @@ export default class MeshTimeseriesView {
 		if (this.isDisposed) return;
 		this.pause();
 		this.loadGeneration++;
+		this._abortLoads();
 
 		this._disposeMeshes();
 
@@ -437,6 +538,81 @@ export default class MeshTimeseriesView {
 	 */
 	_urlFor(seq, index) {
 		return `${seq.basePath}${String(index).padStart(this.padWidth, '0')}${this.fileExtension}`;
+	}
+
+	/**
+	 * The URL of one frame of a resolved sequence
+	 * @private
+	 * @param {Object} seq
+	 * @param {number} frame - Frame index, from 0
+	 * @returns {string}
+	 */
+	_frameUrl(seq, frame) {
+		return seq.frameUrls ? seq.frameUrls[frame] : this._urlFor(seq, (seq.startIndex ?? 1) + frame);
+	}
+
+	/**
+	 * Cancel the mesh downloads still running, when their dataset is replaced or the
+	 * view goes away, so they stop competing with the next dataset's for the connection
+	 * @private
+	 */
+	_abortLoads() {
+		if (this.loadAbort) {
+			this.loadAbort.abort();
+			this.loadAbort = null;
+		}
+	}
+
+	/**
+	 * Download one mesh file and turn it into a scene object shaded with the view's
+	 * surface material. A worker does the work when it can (see MeshLoadPool.js);
+	 * otherwise the file takes the general path on the main thread. Either way the
+	 * download goes through the browser's HTTP cache like any other request.
+	 * @private
+	 * @param {string} url
+	 * @param {AbortSignal} signal - Aborted when the dataset is replaced or the view disposed
+	 * @returns {Promise<{object: THREE.Object3D, bounds: THREE.Box3}>} The object and its
+	 *   bounds in its own space
+	 */
+	async _loadMesh(url, signal) {
+		const frame = await meshLoadPool.load(url, signal);
+		if (!frame) return this._loadMeshOnMainThread(url, signal);
+		if (signal.aborted) throw new DOMException('The mesh download was cancelled', 'AbortError');
+
+		const bounds = new THREE.Box3();
+		if (frame.bounds) {
+			bounds.min.fromArray(frame.bounds.min);
+			bounds.max.fromArray(frame.bounds.max);
+		}
+		return { object: buildMeshObject(frame, this.surfaceMaterial), bounds };
+	}
+
+	/**
+	 * The general path of _loadMesh: download, parse with the full glTF loader and
+	 * compute the normals here. Used when workers are unavailable and for files that
+	 * hold more than static triangle meshes.
+	 * @private
+	 * @param {string} url
+	 * @param {AbortSignal} signal
+	 * @returns {Promise<{object: THREE.Object3D, bounds: THREE.Box3}>}
+	 */
+	async _loadMeshOnMainThread(url, signal) {
+		const response = await fetch(url, { signal });
+		// A missing file is a 404, or the HTML page that Vite's dev / preview servers
+		// answer with instead (HTTP 200)
+		const type = response.headers.get('content-type') || '';
+		if (!response.ok || type.includes('text/html')) {
+			throw new Error(response.ok ? 'not found (the server returned an HTML page instead)'
+				: `${response.status} ${response.statusText}`.trim());
+		}
+		const buffer = await response.arrayBuffer();
+		const gltf = await sharedRenderer.getLoader().parseAsync(buffer, THREE.LoaderUtils.extractUrlBase(url));
+		if (signal.aborted) throw new DOMException('The mesh download was cancelled', 'AbortError');
+
+		const object = gltf.scene;
+		applySurfaceMaterial(object, this.surfaceMaterial);
+		object.updateMatrixWorld(true);
+		return { object, bounds: new THREE.Box3().setFromObject(object) };
 	}
 
 	/**
@@ -565,13 +741,14 @@ export default class MeshTimeseriesView {
 	 */
 	_loadAllMeshes() {
 		const generation = this.loadGeneration;
-		const loader = sharedRenderer.getLoader();
+		this.loadAbort = new AbortController();
+		const { signal } = this.loadAbort;
 
 		const jobs = [];
 		for (let i = 0; i < this.meshCount; i++) {
 			for (const seq of this.sequences) {
 				if (i < seq.meshCount) {
-					jobs.push({ seq, index: i, url: this._urlFor(seq, (seq.startIndex ?? 1) + i) });
+					jobs.push({ seq, index: i, url: this._frameUrl(seq, i) });
 				}
 			}
 		}
@@ -587,6 +764,7 @@ export default class MeshTimeseriesView {
 			settledCount++;
 			activeLoads--;
 			if (settledCount === total && !this._isStale(generation)) {
+				this._trimMissingFrames();
 				this.onLoadComplete();
 			}
 			loadNext();
@@ -599,20 +777,23 @@ export default class MeshTimeseriesView {
 				const job = jobs[nextJob++];
 				activeLoads++;
 
-				loader.loadAsync(job.url)
-					.then((gltf) => {
+				this._loadMesh(job.url, signal)
+					.then(({ object, bounds }) => {
 						if (this._isStale(generation)) {
 							// The view was disposed or switched dataset while this file was loading
-							this._disposeObject(gltf.scene);
+							this._disposeObject(object);
 							return;
 						}
 
-						this._addFrame(job.seq, job.index, gltf.scene);
+						this._addFrame(job.seq, job.index, object, bounds);
 						this.loadedCount++;
 						this.onLoadProgress(this.loadedCount, total);
 						onSettled();
 					})
 					.catch((error) => {
+						// Cancelled downloads are the expected outcome of a dataset switch
+						// or dispose(), not failures
+						if (this._isStale(generation)) return;
 						console.error(`Error loading ${job.url}:`, error);
 						if (job.index === 0) job.seq._resolveFirstFrame(null);
 						onSettled();
@@ -625,18 +806,44 @@ export default class MeshTimeseriesView {
 	}
 
 	/**
-	 * Register one loaded frame of a sequence: shade it, record its bounds, place it
-	 * in the frame group and show it if it is the current frame
+	 * Once every download has settled, shorten each sequence to its last frame that
+	 * loaded. A file can be named by metadata.json (or counted by an explicit
+	 * meshCount) and still be missing, and playing on into frames that will never
+	 * arrive would show an empty scene. Frames missing in the middle are kept as
+	 * gaps, so the frames after them stay at their own times.
+	 * @private
+	 */
+	_trimMissingFrames() {
+		let dropped = 0;
+		for (const seq of this.sequences) {
+			let count = seq.meshCount;
+			while (count > 0 && !seq.meshes[count - 1]) count--;
+			dropped += seq.meshCount - count;
+			seq.meshCount = count;
+		}
+		if (dropped === 0) return;
+
+		this.meshCount = Math.max(0, ...this.sequences.map((seq) => seq.meshCount));
+		console.warn(`MeshTimeseriesView: ${dropped} frame(s) at the end of a sequence could not be loaded; ` +
+			`playing ${this.meshCount} frames`);
+		if (this.meshCount > 0 && this.currentIndex >= this.meshCount) this.setFrame(this.meshCount - 1);
+
+		// The timeline follows the new length, and the progress total the files that exist
+		this.onCountResolved(this.meshCount, this.sequences[0].startIndex);
+		if (this.loadedCount > 0) this.onLoadProgress(this.loadedCount, this.loadedCount);
+	}
+
+	/**
+	 * Register one loaded frame of a sequence: record its bounds, place it in the
+	 * frame group and show it if it is the current frame
 	 * @private
 	 * @param {Object} seq
 	 * @param {number} index - Frame index
-	 * @param {THREE.Object3D} object - Loaded GLTF scene
+	 * @param {THREE.Object3D} object - The frame's scene object, already shaded (see _loadMesh)
+	 * @param {THREE.Box3} bounds - Its bounds in the frame group's space (the GLBs of a
+	 *   sequence share one origin)
 	 */
-	_addFrame(seq, index, object) {
-		applySurfaceMaterial(object, this.surfaceMaterial);
-		// Bounds in the frame group's space (the GLBs of a sequence share one origin)
-		object.updateMatrixWorld(true);
-		const bounds = new THREE.Box3().setFromObject(object);
+	_addFrame(seq, index, object, bounds) {
 		seq.frameBounds[index] = bounds;
 
 		if (index === 0) {
@@ -737,22 +944,12 @@ export default class MeshTimeseriesView {
 	 * @returns {Promise<THREE.Box3|null>}
 	 */
 	async _fetchSequenceBounds(seq) {
-		const slash = seq.basePath.lastIndexOf('/');
-		if (slash === -1) return null;
-		const url = `${seq.basePath.slice(0, slash + 1)}metadata.json`;
-		try {
-			const response = await fetch(url);
-			const type = response.headers.get('content-type') || '';
-			if (!response.ok || type.includes('text/html')) return null;
-			const metadata = await response.json();
-			const isVec3 = (v) => Array.isArray(v) && v.length === 3 && v.every(Number.isFinite);
-			const min = metadata?.bounds?.min;
-			const max = metadata?.bounds?.max;
-			if (!isVec3(min) || !isVec3(max)) return null;
-			return new THREE.Box3(new THREE.Vector3(...min), new THREE.Vector3(...max));
-		} catch (error) {
-			return null;
-		}
+		const metadata = await this._fetchSequenceMetadata(seq);
+		const isVec3 = (v) => Array.isArray(v) && v.length === 3 && v.every(Number.isFinite);
+		const min = metadata?.bounds?.min;
+		const max = metadata?.bounds?.max;
+		if (!isVec3(min) || !isVec3(max)) return null;
+		return new THREE.Box3(new THREE.Vector3(...min), new THREE.Vector3(...max));
 	}
 
 	/**
@@ -1042,6 +1239,8 @@ export default class MeshTimeseriesView {
 	dispose() {
 		this.isDisposed = true;
 		this.pause();
+		this._abortLoads();
+		meshLoadPool.removeClient(this);
 
 		// Remove from shared renderer
 		sharedRenderer.removeView(this);

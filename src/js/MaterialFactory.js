@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { SURFACE_GREY, LIGHT, LIGHT_DIR_VIEW, AO_STRENGTH, AO_COLOR } from './RenderStyle.js';
+import { computeSmoothNormals } from './SmoothNormals.js';
 
 /**
  * MaterialFactory - napari / MeshVis-style surface shading for the mesh views
@@ -111,81 +112,6 @@ export function setUseVertexColors(material, useVertexColors) {
 	if (material?.uniforms?.uUseVertexColor) {
 		material.uniforms.uUseVertexColor.value = useVertexColors ? 1.0 : 0.0;
 	}
-}
-
-/**
- * Give a geometry smooth vertex normals even when its vertices are duplicated per
- * face (as in the per-face expanded GLBs): vertices sharing a position share one
- * accumulated, area-weighted normal, so shading is continuous across label
- * boundaries. Geometries that already carry normals are left alone.
- * @param {THREE.BufferGeometry} geometry
- */
-export function computeSmoothNormals(geometry) {
-	if (geometry.attributes.normal) return;
-	const position = geometry.attributes.position;
-	if (!position) return;
-	const count = position.count;
-
-	// 1. Canonical id per distinct position. Quantized (integer) positions get an
-	//    exact numeric key; float positions fall back to a string key.
-	const canonical = new Int32Array(count);
-	const ids = new Map();
-	const integerPositions = !(position.array instanceof Float32Array || position.array instanceof Float64Array);
-	let nextId = 0;
-	for (let i = 0; i < count; i++) {
-		const x = position.getX(i);
-		const y = position.getY(i);
-		const z = position.getZ(i);
-		const key = integerPositions ? (x + 65536 * (y + 65536 * z)) : `${x},${y},${z}`;
-		let id = ids.get(key);
-		if (id === undefined) {
-			id = nextId++;
-			ids.set(key, id);
-		}
-		canonical[i] = id;
-	}
-
-	// 2. Accumulate face normals (length = 2 * area) into the canonical slots
-	const accum = new Float32Array(nextId * 3);
-	const index = geometry.index;
-	const faceCount = Math.floor((index ? index.count : count) / 3);
-	const pA = new THREE.Vector3();
-	const pB = new THREE.Vector3();
-	const pC = new THREE.Vector3();
-	const cb = new THREE.Vector3();
-	const ab = new THREE.Vector3();
-	for (let f = 0; f < faceCount; f++) {
-		const a = index ? index.getX(f * 3) : f * 3;
-		const b = index ? index.getX(f * 3 + 1) : f * 3 + 1;
-		const c = index ? index.getX(f * 3 + 2) : f * 3 + 2;
-		pA.fromBufferAttribute(position, a);
-		pB.fromBufferAttribute(position, b);
-		pC.fromBufferAttribute(position, c);
-		cb.subVectors(pC, pB);
-		ab.subVectors(pA, pB);
-		cb.cross(ab);
-
-		let k = canonical[a] * 3;
-		accum[k] += cb.x; accum[k + 1] += cb.y; accum[k + 2] += cb.z;
-		k = canonical[b] * 3;
-		accum[k] += cb.x; accum[k + 1] += cb.y; accum[k + 2] += cb.z;
-		k = canonical[c] * 3;
-		accum[k] += cb.x; accum[k + 1] += cb.y; accum[k + 2] += cb.z;
-	}
-
-	// 3. Normalised per-vertex normal from its canonical slot
-	const normals = new Float32Array(count * 3);
-	for (let i = 0; i < count; i++) {
-		const k = canonical[i] * 3;
-		const x = accum[k];
-		const y = accum[k + 1];
-		const z = accum[k + 2];
-		const length = Math.hypot(x, y, z) || 1;
-		normals[i * 3] = x / length;
-		normals[i * 3 + 1] = y / length;
-		normals[i * 3 + 2] = z / length;
-	}
-	geometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
 }
 
 /**

@@ -402,10 +402,11 @@ function setupPlaybackUi(wrapper, elem) {
 					setPlayButton(playBtn, true);
 				}
 			},
-			onFrameChange: (frameIndex, isLoaded) => {
+			onFrameChange: (frameIndex) => {
 				if (timeline) timeline.value = frameIndex;
 				if (frameSpan) {
-					frameSpan.textContent = formatFrame(frameIndex, frameInterval, frameGaps) + (isLoaded ? '' : '...');
+					// Shown at once, even if the frame it names is still loading or decoding
+					frameSpan.textContent = formatFrame(frameIndex, frameInterval, frameGaps);
 				}
 			}
 		},
