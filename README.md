@@ -14,6 +14,7 @@ A Three.js web application for viewing timeseries of 3D meshes and volumetric im
 │   │   ├── MeshTimeseriesView.js
 │   │   ├── VolumeTimeseriesView.js
 │   │   ├── MeshLoadPool.js # Loads mesh frames in Web Workers (meshLoadWorker.js)
+│   │   ├── deviceProfile.js # Memory plan: full on desktops, low-memory on phones and tablets
 │   │   ├── ViewCamera.js   # Orthographic camera, fit-to-coverslip zoom and pan speed shared by both views
 │   │   ├── dataSource.js   # Maps `data/...` paths to where the datasets are hosted
 │   │   ├── theme.js        # Light / dark theme toggle
@@ -143,7 +144,9 @@ What that means for a visitor, and what the viewers add to it:
   viewer; for a volume viewer the compressed bytes of every frame plus up to 16 decoded
   ones. Switching dataset releases all of it. Keeping earlier datasets around would
   make switching back instant but costs about 430 MB per mesh dataset and about
-  200 MB per volume dataset, on a page that already holds more than 1 GB.
+  200 MB per volume dataset, on a page that already holds more than 1 GB. (That is
+  the plan for desktops; phones and tablets hold far less, see
+  [Memory on phones and tablets](#memory-on-phones-and-tablets).)
 - **Preparing a mesh frame** (glTF parsing, meshopt decoding, smooth normals) is not
   something a cache keeps, so it is redone on every load. It runs in Web Workers
   (`src/js/MeshLoadPool.js`), which is why a cached mesh dataset reappears in a
@@ -157,6 +160,55 @@ cache as above, then load the page with the browser's own cache switched off
 (DevTools > Network > "Disable cache"). A hard reload (Shift + Reload) is not enough:
 in Chrome it re-fetches the `metadata.json` files but still takes the frames from
 the cache.
+
+### Memory on phones and tablets
+
+A desktop browser lets a page take several GB. A phone does not: iOS ends a tab's
+process once it holds around 1.5 GB (less on phones with less RAM, and sooner when
+the device as a whole is short of memory) and Safari reloads the page, which fills
+up and is ended again, so the page seems to load for a few seconds and then refresh,
+over and over. The project page, with every frame of two mesh viewers decoded (about
+430 MB each, and as much again on the GPU once drawn) and a volume viewer, is at
+that line.
+
+`src/js/deviceProfile.js` therefore picks a memory plan when a page loads. Desktops
+get the full plan described above. Phones and tablets (iPhone, iPad, Android), and
+any device that reports 4 GB of RAM or less, get the low-memory plan:
+
+- A **mesh viewer** keeps the downloaded file of every frame (about 1 MB each) but
+  only a window of decoded frames around the one on show, 64 MB worth (the
+  `residentBytes` option of `MeshTimeseriesView`; about 9 frames of the project page's
+  meshes). Frames that leave the window are released, on the GPU too, and decoded
+  again by the workers when playback or the timeline comes back to them. If decoding
+  falls behind, the last frame stays up until the next is ready. A viewer that is
+  playing more than a screen away from the visible part of the page keeps its place
+  on the timeline but decodes nothing until it comes back.
+- A **volume viewer** keeps 5 decoded frames instead of 16 and decodes 2 ahead and
+  behind instead of 6. It still holds the compressed bytes of every frame (160 to
+  225 MB per dataset), which is now the largest thing in memory.
+- Both **worker pools** have 2 workers instead of 3.
+- A viewer **starts loading when it comes within one screen height** of the visible
+  part of the page, instead of at page load, so a phone downloads and holds only the
+  viewers its reader gets to.
+
+With that the project page takes roughly 0.2 GB with its first viewer loaded and
+0.5 to 0.65 GB with all three loaded and playing (WebKit, measured on a Mac), against
+more than 1 GB for the full plan, and GPU memory stays near 0.1 GB instead of growing
+to about 0.85 GB.
+
+On the full plan the viewers load in page order instead: the one at the top of the
+page loads alone, with all the bandwidth and every mesh worker, and the others start
+when it has finished (`startViews` in `src/main.js`). A waiting viewer that scrolls
+onto the screen starts at once.
+
+Append `?memory=low` to a page's address to try the low-memory plan on a desktop,
+or `?memory=full` to force the full plan on a device that would get the other.
+
+Both plans give back the memory of a frame the moment it is dropped
+(`src/js/releaseBuffers.js`) instead of leaving it to the garbage collector. Safari's
+collector does not count arrays that arrive from a worker, as every decoded frame
+does, so without this the dropped frames pile up: playing a volume used to grow the
+page by about 80 MB a second until a collection happened to run.
 
 ### Working without the local data
 
@@ -299,7 +351,8 @@ The `scripts/` directory contains utilities for converting raw data:
   fetched up front, frames are decoded (Brotli + 4-bit unpack) in a pool of Web Workers,
   and each view keeps a single 8-bit `R8` 3D texture that is updated in place. The
   decoded-frame cache size (`maxDecodedFrames`, ~10 MB per frame) and decode-ahead
-  window (`prefetchRadius`) are `VolumeTimeseriesView` options.
+  window (`prefetchRadius`) are `VolumeTimeseriesView` options, which `main.js` sets
+  from the memory plan (see [Memory on phones and tablets](#memory-on-phones-and-tablets)).
 
 ### Rendering style
 

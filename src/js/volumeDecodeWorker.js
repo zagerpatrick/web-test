@@ -14,6 +14,8 @@
  * R8 Data3DTexture. 4-bit input (two voxels per byte, high nibble first) is unpacked here.
  */
 
+import { releaseBuffers } from './releaseBuffers.js';
+
 let brotli = null;
 let initPromise = null;
 
@@ -99,6 +101,9 @@ self.onmessage = async (event) => {
 
 			const data = unpack(raw, voxelCount, bitDepth, valueRange);
 			self.postMessage({ type: 'decoded', index, data }, [data.buffer]);
+			// The compressed copy and the intermediate are done with (data's own buffer
+			// has just been handed over, so releasing it again does nothing)
+			releaseBuffers([msg.bytes.buffer, raw.buffer]);
 		} catch (err) {
 			self.postMessage({ type: 'error', index: msg.index, message: String(err?.message || err) });
 		}

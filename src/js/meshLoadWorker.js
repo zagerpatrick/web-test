@@ -2,13 +2,17 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
 import { computeSmoothNormals } from './SmoothNormals.js';
+import { fetchFile } from './fetchFile.js';
+import { releaseBuffers } from './releaseBuffers.js';
 
 /**
  * meshLoadWorker - downloads and prepares one mesh frame off the main thread.
  *
  * Messages in:
- *   { type: 'load', id, url }     url is absolute (a worker resolves relative URLs
- *                                 against its own script, not against the page)
+ *   { type: 'load', id, url }            download the file, then prepare it. url is
+ *                                        absolute (a worker resolves relative URLs
+ *                                        against its own script, not against the page)
+ *   { type: 'decode', id, url, buffer }  prepare a file the main thread already holds
  *   { type: 'cancel', id }
  *
  * Messages out:
@@ -104,40 +108,42 @@ function describeScene(scene) {
 	return { meshes, bounds, transfer: Array.from(transfer) };
 }
 
+/**
+ * Parse one mesh file and post the result. A file this worker cannot parse or
+ * carry over is not an error yet: the main thread tries it with the full loader
+ * and reports what that says.
+ * @param {number} id - Job id
+ * @param {ArrayBuffer} buffer - The file's bytes
+ * @param {string} url - Where the file came from, for any resources it refers to
+ */
+async function prepare(id, buffer, url) {
+	let frame = null;
+	let reason = 'the scene holds more than static triangle meshes';
+	try {
+		const gltf = await loader.parseAsync(buffer, THREE.LoaderUtils.extractUrlBase(url));
+		frame = describeScene(gltf.scene);
+	} catch (error) {
+		reason = String(error?.message || error);
+	}
+	// The file itself is not needed any more: the loader copied what it kept
+	releaseBuffers([buffer]);
+	if (frame) {
+		try {
+			self.postMessage({ type: 'loaded', id, meshes: frame.meshes, bounds: frame.bounds }, frame.transfer);
+			return;
+		} catch (error) {
+			// Arrays that cannot be transferred (nothing has been sent in that case)
+			reason = String(error?.message || error);
+		}
+	}
+	self.postMessage({ type: 'unsupported', id, reason });
+}
+
 async function load(id, url) {
 	const controller = new AbortController();
 	controllers.set(id, controller);
 	try {
-		const response = await fetch(url, { signal: controller.signal });
-		// A missing file is a 404, or the HTML page that Vite's dev / preview servers
-		// answer with instead (HTTP 200)
-		const type = response.headers.get('content-type') || '';
-		if (!response.ok || type.includes('text/html')) {
-			throw new Error(response.ok ? 'not found (the server returned an HTML page instead)'
-				: `${response.status} ${response.statusText}`.trim());
-		}
-		const buffer = await response.arrayBuffer();
-
-		// A file this worker cannot parse or carry over is not an error yet: the main
-		// thread tries it with the full loader and reports what that says
-		let frame = null;
-		let reason = 'the scene holds more than static triangle meshes';
-		try {
-			const gltf = await loader.parseAsync(buffer, THREE.LoaderUtils.extractUrlBase(url));
-			frame = describeScene(gltf.scene);
-		} catch (error) {
-			reason = String(error?.message || error);
-		}
-		if (frame) {
-			try {
-				self.postMessage({ type: 'loaded', id, meshes: frame.meshes, bounds: frame.bounds }, frame.transfer);
-				return;
-			} catch (error) {
-				// Arrays that cannot be transferred (nothing has been sent in that case)
-				reason = String(error?.message || error);
-			}
-		}
-		self.postMessage({ type: 'unsupported', id, reason });
+		await prepare(id, await fetchFile(url, controller.signal), url);
 	} catch (error) {
 		self.postMessage({ type: 'error', id, message: String(error?.message || error) });
 	} finally {
@@ -149,6 +155,10 @@ self.onmessage = (event) => {
 	const msg = event.data;
 	if (msg.type === 'load') {
 		load(msg.id, msg.url);
+	} else if (msg.type === 'decode') {
+		prepare(msg.id, msg.buffer, msg.url).catch((error) => {
+			self.postMessage({ type: 'error', id: msg.id, message: String(error?.message || error) });
+		});
 	} else if (msg.type === 'cancel') {
 		const controller = controllers.get(msg.id);
 		if (controller) controller.abort();

@@ -1,11 +1,13 @@
 import * as THREE from 'three';
 import { TrackballControls } from 'three/addons/controls/TrackballControls.js';
 import sharedRenderer from './SharedRenderer.js';
-import meshLoadPool, { buildMeshObject } from './MeshLoadPool.js';
+import meshLoadPool, { buildMeshObject, cancelled } from './MeshLoadPool.js';
 import { createSurfaceMaterial, applySurfaceMaterial, setUseVertexColors } from './MaterialFactory.js';
 import OrientationMarker from './OrientationMarker.js';
 import Coverslip from './Coverslip.js';
 import { BACKGROUND, COVERSLIP } from './RenderStyle.js';
+import { fetchFile } from './fetchFile.js';
+import { releaseBuffers } from './releaseBuffers.js';
 import {
 	VIEW_PRESETS, animateCamera, createViewCamera, fitZoom, poseCamera, presetOrientation, setZoom, syncControls
 } from './ViewCamera.js';
@@ -39,6 +41,45 @@ async function loadFolderMetadata(url) {
 	return response.json();
 }
 
+// Windowed mode (see the `residentBytes` option): the fewest frames kept decoded
+// however small the budget, the share of the window that lies ahead of the frame
+// on show (where playback is going), and how many frames may be in the decode
+// workers at once. Few in flight keeps a jump along the timeline quick to answer:
+// at most that many frames nobody wants any more are finished first.
+const MIN_RESIDENT_FRAMES = 5;
+const WINDOW_AHEAD = 0.7;
+const MAX_DECODES_IN_FLIGHT = 4;
+
+/**
+ * The buffers holding the geometry under a scene object
+ * @param {THREE.Object3D} root
+ * @returns {Set<ArrayBuffer>}
+ */
+function geometryBuffers(root) {
+	const buffers = new Set();
+	root.traverse((child) => {
+		if (!child.geometry) return;
+		for (const attribute of Object.values(child.geometry.attributes)) {
+			const array = attribute.isInterleavedBufferAttribute ? attribute.data.array : attribute.array;
+			if (array) buffers.add(array.buffer);
+		}
+		if (child.geometry.index?.array) buffers.add(child.geometry.index.array.buffer);
+	});
+	return buffers;
+}
+
+/**
+ * Size of the geometry under a scene object, in bytes: what it occupies in memory,
+ * and again on the GPU once it has been drawn
+ * @param {THREE.Object3D} root
+ * @returns {number}
+ */
+function geometryByteLength(root) {
+	let bytes = 0;
+	for (const buffer of geometryBuffers(root)) bytes += buffer.byteLength;
+	return bytes;
+}
+
 // Distance from the orbit target to the camera; far enough to keep the scene
 // between the near and far planes from every direction (see ViewCamera.js)
 const CAMERA_DISTANCE = 10000;
@@ -70,6 +111,16 @@ const positiveOr = (value, fallback) => (Number(value) > 0 ? Number(value) : fal
  *   scene target. Its default zoom fits the coverslip: the pad seen from above
  *   in centred mode, the scene and its slab from the initial view otherwise
  * - Independent playback state
+ *
+ * Memory. By default every frame is decoded once and stays in memory, so playback
+ * and the timeline never wait; a 65-frame sequence of 140,000-vertex meshes takes
+ * about 430 MB that way, and as much again on the GPU once every frame has been
+ * drawn. With a `residentBytes` budget the view runs windowed instead: it keeps the
+ * downloaded file of every frame (about 1 MB each) but only a window of decoded
+ * frames around the one on show, releasing those behind it and decoding those
+ * ahead as playback goes. The frame on show can then trail the one asked for by a
+ * moment, and holds until its successor is ready. Phones and tablets get a budget,
+ * because their browsers end a page that takes too much (see deviceProfile.js).
  */
 export default class MeshTimeseriesView {
 	/**
@@ -89,6 +140,9 @@ export default class MeshTimeseriesView {
 	 * @param {number} options.padWidth - Zero-padding width of the file index (default: 4)
 	 * @param {string} options.fileExtension - File extension (default: '.glb')
 	 * @param {number} options.loadConcurrency - Concurrent loads (default: 12)
+	 * @param {number} options.residentBytes - Decoded geometry kept in memory, in bytes
+	 *   (default: Infinity, every frame); a finite budget switches to the windowed mode
+	 *   described above
 	 * @param {number} options.defaultPlaySpeed - Default playback speed in ms (default: 250)
 	 * @param {boolean} options.enableControls - Enable OrbitControls (default: true)
 	 * @param {boolean} options.useVertexColors - Use vertex colors from mesh (default: false)
@@ -149,8 +203,18 @@ export default class MeshTimeseriesView {
 		// Incremented by setDataset() so loads still in flight for a previous dataset
 		// can recognise they are stale and discard their results.
 		this.loadGeneration = 0;
-		// Cancels the downloads of the dataset being loaded (see _loadAllMeshes)
+		// Cancels the downloads of the dataset being loaded (see _loadFrames)
 		this.loadAbort = null;
+		// False until start()
+		this.started = false;
+		// True once every download of the dataset has finished or failed
+		this.downloadsSettled = false;
+		// Windowed mode: the budget, the frame on show, which can trail currentIndex,
+		// and whether the view is near enough to the screen to be worth decoding for
+		this.residentBytes = positiveOr(options.residentBytes, Infinity);
+		this.windowed = Number.isFinite(this.residentBytes);
+		this.displayedIndex = -1;
+		this.nearScreen = true;
 		// Bounds the coverslip is seated on: the first frame (centred mode) or the union
 		// of the sequence bounds (absolute mode, also used to fit the camera)
 		this.sceneBounds = null;
@@ -198,7 +262,15 @@ export default class MeshTimeseriesView {
 				// Where the frame count came from, for the console summary
 				countSource: '',
 				meshes: [],
-				frameBounds: []
+				frameBounds: [],
+				// The frames whose file could not be downloaded or decoded
+				unavailable: [],
+				// Windowed mode: each frame's downloaded file (`meshes` then holds only
+				// the frames decoded at the moment), the frames in the decode workers,
+				// and the decoded size of one frame
+				bytes: [],
+				decoding: new Set(),
+				frameBytes: 0
 			};
 			// Resolves with the first frame's Box3 (or null if it never loads); used
 			// to fit the scene when a sequence ships no metadata.json
@@ -265,6 +337,15 @@ export default class MeshTimeseriesView {
 
 		// Register with shared renderer
 		sharedRenderer.addView(this);
+	}
+
+	/**
+	 * Begin loading the dataset; a new view shows an empty scene until then.
+	 * Further calls do nothing.
+	 */
+	start() {
+		if (this.started || this.isDisposed) return;
+		this.started = true;
 
 		// Start the mesh load workers now, so they are up when the frame list arrives
 		meshLoadPool.addClient(this);
@@ -345,7 +426,7 @@ export default class MeshTimeseriesView {
 				return;
 			}
 
-			this._loadAllMeshes();
+			this._loadFrames();
 		} catch (error) {
 			console.error('MeshTimeseriesView: failed to resolve mesh files:', error);
 		}
@@ -480,9 +561,11 @@ export default class MeshTimeseriesView {
 		this.sceneBounds = null;
 		this.currentIndex = 0;
 		this.loadedCount = 0;
+		this.displayedIndex = -1;
 
 		this.onFrameChange(0, false);
-		this._start();
+		// A view still waiting for start() loads this dataset when it gets there
+		if (this.started) this._start();
 	}
 
 	/**
@@ -494,8 +577,9 @@ export default class MeshTimeseriesView {
 	}
 
 	/**
-	 * Release the GPU resources of one loaded GLTF scene. The shared surface
-	 * material is kept; it is released in dispose().
+	 * Release one frame's scene object for good: its GPU resources, and the memory
+	 * of its geometry (at once, see releaseBuffers.js). The shared surface material
+	 * is kept; it is released in dispose().
 	 * @private
 	 * @param {THREE.Object3D} root
 	 */
@@ -510,6 +594,7 @@ export default class MeshTimeseriesView {
 				}
 			}
 		});
+		releaseBuffers(geometryBuffers(root));
 	}
 
 	/**
@@ -524,8 +609,13 @@ export default class MeshTimeseriesView {
 					if (mesh.parent) mesh.parent.remove(mesh);
 				}
 			}
+			// Windowed mode's downloaded files go too
+			releaseBuffers(seq.bytes.filter(Boolean));
 			seq.meshes = [];
 			seq.frameBounds = [];
+			seq.bytes = [];
+			seq.decoding.clear();
+			seq.unavailable = [];
 		}
 	}
 
@@ -576,9 +666,30 @@ export default class MeshTimeseriesView {
 	 */
 	async _loadMesh(url, signal) {
 		const frame = await meshLoadPool.load(url, signal);
-		if (!frame) return this._loadMeshOnMainThread(url, signal);
-		if (signal.aborted) throw new DOMException('The mesh download was cancelled', 'AbortError');
+		return frame ? this._objectFromWorker(frame) : this._parseOnMainThread(await fetchFile(url, signal), url, signal);
+	}
 
+	/**
+	 * Windowed mode's counterpart of _loadMesh: build a frame from its file, which
+	 * the view already holds and keeps
+	 * @private
+	 * @param {ArrayBuffer} buffer - The file's bytes (left untouched)
+	 * @param {string} url - Where the file came from
+	 * @param {AbortSignal} signal
+	 * @returns {Promise<{object: THREE.Object3D, bounds: THREE.Box3}>}
+	 */
+	async _decodeMesh(buffer, url, signal) {
+		const frame = await meshLoadPool.decode(buffer, url, signal);
+		return frame ? this._objectFromWorker(frame) : this._parseOnMainThread(buffer, url, signal);
+	}
+
+	/**
+	 * Wrap what a worker prepared (see MeshLoadPool.js) as a scene object
+	 * @private
+	 * @param {Object} frame
+	 * @returns {{object: THREE.Object3D, bounds: THREE.Box3}}
+	 */
+	_objectFromWorker(frame) {
 		const bounds = new THREE.Box3();
 		if (frame.bounds) {
 			bounds.min.fromArray(frame.bounds.min);
@@ -588,26 +699,18 @@ export default class MeshTimeseriesView {
 	}
 
 	/**
-	 * The general path of _loadMesh: download, parse with the full glTF loader and
-	 * compute the normals here. Used when workers are unavailable and for files that
-	 * hold more than static triangle meshes.
+	 * The general path: parse a mesh file with the full glTF loader and compute the
+	 * normals here. Used when workers are unavailable and for files that hold more
+	 * than static triangle meshes.
 	 * @private
-	 * @param {string} url
+	 * @param {ArrayBuffer} buffer - The file's bytes (the loader copies what it keeps)
+	 * @param {string} url - Where the file came from
 	 * @param {AbortSignal} signal
 	 * @returns {Promise<{object: THREE.Object3D, bounds: THREE.Box3}>}
 	 */
-	async _loadMeshOnMainThread(url, signal) {
-		const response = await fetch(url, { signal });
-		// A missing file is a 404, or the HTML page that Vite's dev / preview servers
-		// answer with instead (HTTP 200)
-		const type = response.headers.get('content-type') || '';
-		if (!response.ok || type.includes('text/html')) {
-			throw new Error(response.ok ? 'not found (the server returned an HTML page instead)'
-				: `${response.status} ${response.statusText}`.trim());
-		}
-		const buffer = await response.arrayBuffer();
+	async _parseOnMainThread(buffer, url, signal) {
 		const gltf = await sharedRenderer.getLoader().parseAsync(buffer, THREE.LoaderUtils.extractUrlBase(url));
-		if (signal.aborted) throw new DOMException('The mesh download was cancelled', 'AbortError');
+		if (signal.aborted) throw cancelled();
 
 		const object = gltf.scene;
 		applySurfaceMaterial(object, this.surfaceMaterial);
@@ -734,29 +837,42 @@ export default class MeshTimeseriesView {
 	}
 
 	/**
-	 * Load every mesh of every sequence with concurrency control. Files are queued
-	 * frame-major (frame 0 of each sequence first) so the first frame of the whole
-	 * scene appears as early as possible.
+	 * Load every frame of every sequence with concurrency control. By default a
+	 * worker downloads and decodes each file and the frame is kept, in frame-major
+	 * order (frame 0 of each sequence first) so the first frame of the whole scene
+	 * appears as early as possible. In windowed mode the files themselves are
+	 * downloaded and kept, nearest to the frame on show first, while _updateWindow
+	 * decodes the frames around that frame as their files arrive.
 	 * @private
 	 */
-	_loadAllMeshes() {
+	_loadFrames() {
 		const generation = this.loadGeneration;
 		this.loadAbort = new AbortController();
 		const { signal } = this.loadAbort;
+		this.downloadsSettled = false;
 
-		const jobs = [];
+		const waiting = [];
 		for (let i = 0; i < this.meshCount; i++) {
 			for (const seq of this.sequences) {
-				if (i < seq.meshCount) {
-					jobs.push({ seq, index: i, url: this._frameUrl(seq, i) });
-				}
+				if (i < seq.meshCount) waiting.push({ seq, index: i, url: this._frameUrl(seq, i) });
 			}
 		}
-		const total = jobs.length;
+		const total = waiting.length;
 
 		let activeLoads = 0;
-		let nextJob = 0;
 		let settledCount = 0;
+
+		// Windowed mode takes the file nearest to the frame on show, so the window
+		// fills first and a jump along the timeline is served ahead of the rest
+		const takeNext = () => {
+			let best = 0;
+			if (this.windowed) {
+				for (let k = 1; k < waiting.length; k++) {
+					if (Math.abs(waiting[k].index - this.currentIndex) < Math.abs(waiting[best].index - this.currentIndex)) best = k;
+				}
+			}
+			return waiting.splice(best, 1)[0];
+		};
 
 		// Runs after every load, successful or not, so completion fires even when
 		// some files are missing (an over-estimated explicit count, a bad file, ...)
@@ -764,7 +880,9 @@ export default class MeshTimeseriesView {
 			settledCount++;
 			activeLoads--;
 			if (settledCount === total && !this._isStale(generation)) {
+				this.downloadsSettled = true;
 				this._trimMissingFrames();
+				this._updateWindow();
 				this.onLoadComplete();
 			}
 			loadNext();
@@ -773,19 +891,25 @@ export default class MeshTimeseriesView {
 		const loadNext = () => {
 			if (this._isStale(generation)) return;
 
-			while (activeLoads < this.loadConcurrency && nextJob < total) {
-				const job = jobs[nextJob++];
+			while (activeLoads < this.loadConcurrency && waiting.length > 0) {
+				const { seq, index, url } = takeNext();
 				activeLoads++;
 
-				this._loadMesh(job.url, signal)
-					.then(({ object, bounds }) => {
+				(this.windowed ? fetchFile(url, signal) : this._loadMesh(url, signal))
+					.then((loaded) => {
 						if (this._isStale(generation)) {
 							// The view was disposed or switched dataset while this file was loading
-							this._disposeObject(object);
+							if (this.windowed) releaseBuffers([loaded]);
+							else this._disposeObject(loaded.object);
 							return;
 						}
 
-						this._addFrame(job.seq, job.index, object, bounds);
+						if (this.windowed) {
+							seq.bytes[index] = loaded;
+							this._updateWindow();
+						} else {
+							this._addFrame(seq, index, loaded.object, loaded.bounds);
+						}
 						this.loadedCount++;
 						this.onLoadProgress(this.loadedCount, total);
 						onSettled();
@@ -794,8 +918,8 @@ export default class MeshTimeseriesView {
 						// Cancelled downloads are the expected outcome of a dataset switch
 						// or dispose(), not failures
 						if (this._isStale(generation)) return;
-						console.error(`Error loading ${job.url}:`, error);
-						if (job.index === 0) job.seq._resolveFirstFrame(null);
+						console.error(`Error loading ${url}:`, error);
+						this._markUnavailable(seq, index);
 						onSettled();
 					});
 			}
@@ -803,6 +927,179 @@ export default class MeshTimeseriesView {
 
 		this.onLoadProgress(0, total);
 		loadNext();
+	}
+
+	/**
+	 * Windowed mode: the frames to keep decoded, most wanted first: the current
+	 * frame, then alternately those after and before it, with more of the window
+	 * ahead than behind. The window wraps around the ends of the timeline, as
+	 * playback does. Its size follows from the budget once the decoded size of a
+	 * frame is known.
+	 * @private
+	 * @returns {number[]}
+	 */
+	_windowFrames() {
+		const count = this.meshCount;
+		const frameBytes = this.sequences.reduce((sum, seq) => sum + seq.frameBytes, 0);
+		const fitting = frameBytes > 0 ? Math.floor(this.residentBytes / frameBytes) : 0;
+		const size = Math.min(Math.max(MIN_RESIDENT_FRAMES, fitting), count);
+		const ahead = Math.ceil((size - 1) * WINDOW_AHEAD);
+		const behind = size - 1 - ahead;
+		const frames = [this.currentIndex];
+		for (let k = 1; k <= ahead; k++) {
+			frames.push((this.currentIndex + k) % count);
+			if (k <= behind) frames.push((this.currentIndex - k + count) % count);
+		}
+		return frames;
+	}
+
+	/**
+	 * Windowed mode: bring the decoded frames in line with the window around the
+	 * current frame. Frames that have left it are released, which frees their
+	 * geometry here and on the GPU; frames that have entered it and whose file has
+	 * arrived are sent to be decoded, most wanted first. Nothing is done while the
+	 * view is away from the screen: playback then only moves the current frame, and
+	 * the window catches up when the view comes back.
+	 * @private
+	 */
+	_updateWindow() {
+		if (!this.windowed || !this.nearScreen || this.meshCount === 0 || !this.loadAbort) return;
+
+		const wanted = this._windowFrames();
+		const keep = new Set(wanted);
+		// The frame on show stays until its successor is ready, wherever the window is
+		keep.add(this.displayedIndex);
+		for (const seq of this.sequences) {
+			// forEach passes over the gaps that released frames leave
+			seq.meshes.forEach((object, frame) => {
+				if (!keep.has(frame)) this._releaseFrame(seq, frame);
+			});
+		}
+
+		for (const frame of wanted) {
+			for (const seq of this.sequences) this._decodeFrame(seq, frame);
+		}
+		// The first frame fixes where everything is placed (the centring offset and
+		// the coverslip, or the scene bounds of a sequence without metadata.json), so
+		// each sequence's is decoded once even if the window never gets to it
+		for (const seq of this.sequences) {
+			if (!seq.frameBounds[0]) this._decodeFrame(seq, 0);
+		}
+	}
+
+	/**
+	 * Tell a windowed view whether it is near enough to the screen to be worth
+	 * decoding frames for (see _updateWindow). Views are near until told otherwise.
+	 * @param {boolean} near
+	 */
+	setNearScreen(near) {
+		if (near === this.nearScreen) return;
+		this.nearScreen = near;
+		if (near) this._updateWindow();
+	}
+
+	/**
+	 * Windowed mode: send one frame of one sequence to be decoded, unless it is
+	 * decoded already, on its way, without a file (yet), or the workers are busy
+	 * @private
+	 * @param {Object} seq
+	 * @param {number} frame
+	 */
+	_decodeFrame(seq, frame) {
+		const inFlight = this.sequences.reduce((sum, each) => sum + each.decoding.size, 0);
+		if (inFlight >= MAX_DECODES_IN_FLIGHT) return;
+		if (frame >= seq.meshCount || seq.meshes[frame] || seq.decoding.has(frame) || !seq.bytes[frame]) return;
+
+		const generation = this.loadGeneration;
+		const url = this._frameUrl(seq, frame);
+		seq.decoding.add(frame);
+
+		this._decodeMesh(seq.bytes[frame], url, this.loadAbort.signal)
+			.then(({ object, bounds }) => {
+				if (this._isStale(generation)) {
+					this._disposeObject(object);
+					return;
+				}
+				seq.decoding.delete(frame);
+				seq.frameBytes = Math.max(seq.frameBytes, geometryByteLength(object));
+				// If the window moved on meanwhile, _updateWindow releases the frame again
+				this._addFrame(seq, frame, object, bounds);
+				this._updateWindow();
+			})
+			.catch((error) => {
+				if (this._isStale(generation)) return;
+				seq.decoding.delete(frame);
+				console.error(`Error loading ${url}:`, error);
+				this._markUnavailable(seq, frame);
+				this._updateWindow();
+			});
+	}
+
+	/**
+	 * Note that a frame of a sequence has nothing to show, because its file could
+	 * not be downloaded or decoded
+	 * @private
+	 * @param {Object} seq
+	 * @param {number} frame
+	 */
+	_markUnavailable(seq, frame) {
+		seq.unavailable[frame] = true;
+		if (frame === 0) seq._resolveFirstFrame(null);
+		if (!this.windowed) return;
+
+		// A file that arrived but cannot be decoded has not loaded after all. If it
+		// is the last of its sequence the sequence ends a frame earlier, as it would
+		// have had the file been missing.
+		if (seq.bytes[frame]) {
+			releaseBuffers([seq.bytes[frame]]);
+			delete seq.bytes[frame];
+			this.loadedCount--;
+			if (this.downloadsSettled) this._trimMissingFrames();
+		}
+		// The rest of the frame need not wait for this part any longer
+		this._showCurrentFrame();
+	}
+
+	/**
+	 * Windowed mode: drop one decoded frame of a sequence. Its file is kept, so it
+	 * can be decoded again.
+	 * @private
+	 * @param {Object} seq
+	 * @param {number} frame
+	 */
+	_releaseFrame(seq, frame) {
+		const object = seq.meshes[frame];
+		this._disposeObject(object);
+		this.frameRoot.remove(object);
+		delete seq.meshes[frame];
+	}
+
+	/**
+	 * Windowed mode: true when everything a frame has to show is decoded, that is,
+	 * when each sequence that reaches this frame either has it in memory or never will
+	 * @private
+	 * @param {number} frame
+	 * @returns {boolean}
+	 */
+	_isFrameResident(frame) {
+		return this.sequences.every((seq) => frame >= seq.meshCount || seq.meshes[frame] || seq.unavailable[frame]);
+	}
+
+	/**
+	 * Windowed mode: put the current frame on show if all of it is decoded.
+	 * Until then the frame shown before stays up, so playback that gets ahead of
+	 * the decoding holds the last picture instead of flashing an empty scene.
+	 * @private
+	 */
+	_showCurrentFrame() {
+		const frame = this.currentIndex;
+		if (frame === this.displayedIndex || frame >= this.meshCount || !this._isFrameResident(frame)) return;
+		for (const seq of this.sequences) {
+			if (seq.meshes[this.displayedIndex]) seq.meshes[this.displayedIndex].visible = false;
+			if (seq.meshes[frame]) seq.meshes[frame].visible = true;
+		}
+		this.displayedIndex = frame;
+		this.onFrameChange(frame, true);
 	}
 
 	/**
@@ -817,7 +1114,7 @@ export default class MeshTimeseriesView {
 		let dropped = 0;
 		for (const seq of this.sequences) {
 			let count = seq.meshCount;
-			while (count > 0 && !seq.meshes[count - 1]) count--;
+			while (count > 0 && seq.unavailable[count - 1]) count--;
 			dropped += seq.meshCount - count;
 			seq.meshCount = count;
 		}
@@ -845,20 +1142,23 @@ export default class MeshTimeseriesView {
 	 */
 	_addFrame(seq, index, object, bounds) {
 		seq.frameBounds[index] = bounds;
-
 		if (index === 0) {
 			seq._resolveFirstFrame(bounds);
 			// Centred mode: the first sequence's first frame defines the XY shift and
-			// seats the coverslip
-			if (this.centerFrames && seq === this.sequences[0]) this._centerFirstFrame();
+			// seats the coverslip. Once per dataset: windowed mode decodes the frame
+			// again on every pass of the playback.
+			if (this.centerFrames && seq === this.sequences[0] && !this.sceneBounds) this._centerFirstFrame();
 		}
 
-		object.visible = index === this.currentIndex;
+		// Windowed mode shows a frame only once all of it is decoded (_showCurrentFrame)
+		object.visible = !this.windowed && index === this.currentIndex;
 		this.frameRoot.add(object);
 		seq.meshes[index] = object;
 
-		// The frame on screen just gained a mesh: let the UI drop its "loading" marker
-		if (index === this.currentIndex) {
+		if (this.windowed) {
+			this._showCurrentFrame();
+		} else if (index === this.currentIndex) {
+			// The frame on screen just gained a mesh: let the UI drop its "loading" marker
 			this.onFrameChange(index, this.isFrameLoaded(index));
 		}
 	}
@@ -869,6 +1169,16 @@ export default class MeshTimeseriesView {
 	 */
 	setFrame(index) {
 		if (index < 0 || index >= this.meshCount) return;
+
+		if (this.windowed) {
+			this.currentIndex = index;
+			// Shown at once if it is decoded; otherwise the window moves to it and it
+			// appears when ready, the previous frame staying up meanwhile
+			this._showCurrentFrame();
+			this._updateWindow();
+			if (this.displayedIndex !== index) this.onFrameChange(index, false);
+			return;
+		}
 
 		const previous = this.currentIndex;
 		this.currentIndex = index;

@@ -46,7 +46,8 @@ export default class VolumeTimeseriesView {
 	 * @param {number} options.frameCount - Number of volumes in the timeseries (default: from metadata)
 	 * @param {number} options.loadConcurrency - Concurrent fetches of compressed frames (default: 12)
 	 * @param {number} options.maxDecodedFrames - Decoded frames kept in memory, ~10 MB each (default: 16)
-	 * @param {number} options.prefetchRadius - Frames decoded ahead/behind the current one (default: 6)
+	 * @param {number} options.prefetchRadius - Frames decoded ahead/behind the current one (default: 6,
+	 *   or as many as fit in maxDecodedFrames beside the current one)
 	 * @param {number} options.defaultPlaySpeed - Default playback speed in ms (default: 250)
 	 * @param {boolean} options.enableControls - Enable TrackballControls (default: true)
 	 * @param {number} options.contrastMin - Initial lower contrast limit 0-1 (default: 0.1)
@@ -68,7 +69,9 @@ export default class VolumeTimeseriesView {
 		this.basePath = options.basePath || 'data/volumes/';
 		this.loadConcurrency = options.loadConcurrency || 12;
 		this.maxDecodedFrames = options.maxDecodedFrames || 16;
-		this.prefetchRadius = options.prefetchRadius || 6;
+		// Decoding more frames around the current one than are kept would evict them
+		// again before they are shown
+		this.prefetchRadius = Math.min(options.prefetchRadius || 6, Math.floor((this.maxDecodedFrames - 1) / 2));
 		this.defaultPlaySpeed = options.defaultPlaySpeed || 250;
 		this.enableControls = options.enableControls !== false;
 
@@ -101,6 +104,8 @@ export default class VolumeTimeseriesView {
 		this.loadedCount = 0;
 		this.isDisposed = false;
 		this.initialLoadComplete = false;
+		// False until start()
+		this.started = false;
 		// Incremented by setDataset() so async work for a previous dataset can bail out
 		this.loadGeneration = 0;
 		// Incremented by each camera animation so a newer one supersedes it
@@ -142,7 +147,7 @@ export default class VolumeTimeseriesView {
 	 * Initialize the view
 	 * @private
 	 */
-	async _init() {
+	_init() {
 		// Create scene
 		this.scene = new THREE.Scene();
 		this.scene.background = new THREE.Color(BACKGROUND.volume);
@@ -168,15 +173,25 @@ export default class VolumeTimeseriesView {
 		// Create orientation marker with light text for volume viewer
 		this.orientationMarker = new OrientationMarker({ size: this.axesSize, labelColor: 0xcccccc });
 
-		// Create volume loader and material factory
-		this.volumeLoader = this._createLoader();
 		this.materialFactory = new VolumeMaterialFactory();
 
 		// Register with shared renderer
 		sharedRenderer.addView(this);
+	}
+
+	/**
+	 * Begin loading the dataset; a new view shows an empty scene until then.
+	 * Further calls do nothing.
+	 */
+	start() {
+		if (this.started || this.isDisposed) return;
+		this.started = true;
+
+		// The loader brings up the decode workers, so it is not made before it is needed
+		this.volumeLoader = this._createLoader();
 
 		// Load metadata and start loading volumes
-		await this._loadMetadataAndStart();
+		this._loadMetadataAndStart();
 	}
 
 	/**
@@ -263,6 +278,10 @@ export default class VolumeTimeseriesView {
 		if (this.isDisposed) return;
 		this.pause();
 		this.loadGeneration++;
+		this.basePath = options.basePath ?? this.basePath;
+		// A view still waiting for start() has nothing to replace: it loads this
+		// dataset when it gets there
+		if (!this.started) return;
 
 		// Create the replacement loader before disposing the old one so the shared
 		// decode worker pool keeps at least one client and is not torn down and respawned.
@@ -272,7 +291,6 @@ export default class VolumeTimeseriesView {
 
 		this._disposeVolumeResources();
 
-		this.basePath = options.basePath ?? this.basePath;
 		this.metadata = null;
 		this.frameCount = 0;
 		this.volumeUrls = [];
@@ -612,6 +630,8 @@ export default class VolumeTimeseriesView {
 
 		this.materialFactory.updateMaterial(this.volumeMaterial, { updateJitter: true });
 		this.appliedIndex = index;
+		// The texture reads this frame's data until the next one is applied
+		this.volumeLoader.pin(index);
 		this.onFrameChange(index, true);
 	}
 
@@ -625,7 +645,6 @@ export default class VolumeTimeseriesView {
 		if (index === this.currentIndex && index === this.appliedIndex) return;
 
 		this.currentIndex = index;
-		this.volumeLoader.pin(index);
 		this._requestFrame(index);
 
 		const data = this.volumeLoader.getDecoded(index);
@@ -650,7 +669,7 @@ export default class VolumeTimeseriesView {
 	 * @returns {boolean}
 	 */
 	isFrameLoaded(index) {
-		return this.volumeLoader.hasDecoded(index);
+		return !!this.volumeLoader && this.volumeLoader.hasDecoded(index);
 	}
 
 	/**

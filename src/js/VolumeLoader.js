@@ -1,4 +1,6 @@
 import * as THREE from 'three';
+import { memoryPlan } from './deviceProfile.js';
+import { releaseBuffers } from './releaseBuffers.js';
 
 /**
  * VolumeLoader - fetches, decodes and caches timeseries volume frames.
@@ -17,7 +19,7 @@ import * as THREE from 'three';
 // Shared decode worker pool (module singleton, used by every VolumeLoader)
 // ---------------------------------------------------------------------------
 
-const POOL_SIZE = Math.max(1, Math.min(3, (navigator.hardwareConcurrency || 2) - 1));
+const POOL_SIZE = memoryPlan.volumeWorkers;
 
 class DecodePool {
 	constructor() {
@@ -324,7 +326,10 @@ export default class VolumeLoader {
 	}
 
 	/**
-	 * Keep one frame's decoded data resident regardless of LRU order (the frame on screen).
+	 * Keep one frame's decoded data resident regardless of LRU order: the frame on
+	 * screen, whose data the view's texture is using. The texture goes on showing it
+	 * while the frame asked for (the target) is still being decoded, and an evicted
+	 * frame's memory is given back at once.
 	 * @param {number} index
 	 */
 	pin(index) {
@@ -373,6 +378,9 @@ export default class VolumeLoader {
 			this.abortController = null;
 		}
 		pool.removeClient(this);
+		// Give the memory of both tiers back now (see releaseBuffers.js)
+		releaseBuffers(Array.from(this.decoded.values(), (data) => data.buffer));
+		releaseBuffers(this.compressed.filter(Boolean).map((bytes) => bytes.buffer));
 		this.compressed = [];
 		this.unfetched.clear();
 		this.decoded.clear();
@@ -433,7 +441,10 @@ export default class VolumeLoader {
 	_onDecoded(index, data) {
 		this.inFlight.delete(index);
 		this.pending.delete(index);
-		if (this.isDisposed) return;
+		if (this.isDisposed) {
+			releaseBuffers([data.buffer]);
+			return;
+		}
 
 		this._store(index, data);
 		this.onDecoded(index, data);
@@ -449,7 +460,7 @@ export default class VolumeLoader {
 	}
 
 	_store(index, data) {
-		if (this.decoded.has(index)) this._removeFromOrder(index);
+		if (this.decoded.has(index)) this._drop(index);
 		while (this.decoded.size >= this.maxDecodedFrames) {
 			if (!this._evictOne()) break;
 		}
@@ -469,14 +480,17 @@ export default class VolumeLoader {
 
 	/** Evict the least recently used frame that is neither on screen nor the target. */
 	_evictOne() {
-		for (let k = 0; k < this.decodedOrder.length; k++) {
-			const i = this.decodedOrder[k];
-			if (i === this.pinnedIndex || i === this.targetIndex) continue;
-			this.decodedOrder.splice(k, 1);
-			this.decoded.delete(i);
-			return true;
-		}
-		return false;
+		const index = this.decodedOrder.find((i) => i !== this.pinnedIndex && i !== this.targetIndex);
+		if (index === undefined) return false;
+		this._drop(index);
+		return true;
+	}
+
+	/** Forget one decoded frame and give its memory back at once (see releaseBuffers.js) */
+	_drop(index) {
+		this._removeFromOrder(index);
+		releaseBuffers([this.decoded.get(index).buffer]);
+		this.decoded.delete(index);
 	}
 
 	/** Use idle capacity to decode the next-nearest frame until the cache is full. */

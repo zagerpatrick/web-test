@@ -3,6 +3,7 @@ import MeshTimeseriesView from './js/MeshTimeseriesView.js';
 import VolumeTimeseriesView from './js/VolumeTimeseriesView.js';
 import { initThemeToggle } from './js/theme.js';
 import { resolveDataPath } from './js/dataSource.js';
+import { memoryPlan } from './js/deviceProfile.js';
 
 /**
  * Main orchestration layer
@@ -19,15 +20,16 @@ function init() {
 	// Dark / light theme switch (the theme itself is applied from the <head>)
 	initThemeToggle();
 
+	// Which memory plan the viewers follow on this device (see js/deviceProfile.js)
+	console.log(`Viewers: ${memoryPlan.lowMemory ? 'low-memory plan (phone, tablet or little RAM)' : 'full memory plan'}`);
+
 	// Initialize shared renderer with the full-page canvas
 	const canvas = document.querySelector('#c');
 	sharedRenderer.init(canvas);
 
-	// Auto-create mesh views from HTML data attributes
-	initMeshViews();
-
-	// Auto-create volume views from HTML data attributes
-	initVolumeViews();
+	// Auto-create mesh and volume views from HTML data attributes, then start
+	// their loading, the view at the top of the page first
+	startViews([...initMeshViews(), ...initVolumeViews()]);
 
 	// Setup keyboard controls for focused view
 	setupKeyboardControls();
@@ -281,6 +283,71 @@ function wireViewHint(elem) {
 }
 
 /**
+ * Low-memory plan (phones and tablets, see js/deviceProfile.js): start a view's
+ * loading when it comes within a screen's height of the visible part of the page.
+ * A phone then downloads and holds only the viewers its reader gets to, instead of
+ * every dataset on the page at once. A mesh view is also told whenever it comes
+ * near or goes away, so one that decodes frames as it plays does not keep doing so
+ * unseen.
+ * @param {HTMLElement} elem - The .mesh-view / .volume-view element
+ * @param {{start: Function, setNearScreen?: Function}} view
+ */
+function startWhenNear(elem, view) {
+	new IntersectionObserver((entries) => {
+		const near = entries[entries.length - 1].isIntersecting;
+		if (near) view.start();
+		view.setNearScreen?.(near);
+	}, { rootMargin: '100% 0px' }).observe(elem);
+}
+
+/**
+ * Start the loading of every view on the page, the one nearest the top first.
+ *
+ * Started together, the views share the download bandwidth and the mesh load
+ * workers, so the view a reader sees on arrival fills no faster than the ones
+ * further down. Instead the first view in page order loads alone, and the others
+ * start once it has finished. A waiting view that scrolls onto the screen starts
+ * at once: the reader is looking at it, and it must not hang on a first view that
+ * is slow or has failed.
+ *
+ * On the low-memory plan the views already load as the reader nears them (see
+ * startWhenNear), which puts the top one first as well.
+ * @param {{elem: HTMLElement, view: {start: Function}, loaded: Promise}[]} viewers -
+ *   `loaded` settles when the view's first dataset has finished loading
+ */
+function startViews(viewers) {
+	if (memoryPlan.loadWhenNear && typeof IntersectionObserver !== 'undefined') {
+		for (const { elem, view } of viewers) startWhenNear(elem, view);
+		return;
+	}
+
+	const inPageOrder = (a, b) => (a.elem.compareDocumentPosition(b.elem) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1);
+	const [first, ...rest] = [...viewers].sort(inPageOrder);
+	if (!first) return;
+
+	first.view.start();
+	if (rest.length === 0) return;
+
+	// start() does nothing the second time, so a view both paths reach is safe
+	let observer = null;
+	if (typeof IntersectionObserver !== 'undefined') {
+		observer = new IntersectionObserver((entries) => {
+			for (const entry of entries) {
+				if (!entry.isIntersecting) continue;
+				observer.unobserve(entry.target);
+				rest.find(({ elem }) => elem === entry.target)?.view.start();
+			}
+		});
+		for (const { elem } of rest) observer.observe(elem);
+	}
+
+	first.loaded.then(() => {
+		observer?.disconnect();
+		for (const { view } of rest) view.start();
+	});
+}
+
+/**
  * Show the play triangle or the pause bars on a play button
  * @param {HTMLButtonElement|null} playBtn
  * @param {boolean} isPlaying
@@ -360,7 +427,13 @@ function setupPlaybackUi(wrapper, elem) {
 	const autoplay = elem.dataset.autoplay === 'true';
 	let view = null;
 
+	// Settles the first time a dataset has finished loading (see startViews)
+	let markLoaded;
+	const loaded = new Promise((resolve) => { markLoaded = resolve; });
+
 	const ui = {
+		loaded,
+
 		/**
 		 * Size the timeline and the progress total once the frame count is known
 		 * @param {number} count
@@ -396,6 +469,7 @@ function setupPlaybackUi(wrapper, elem) {
 			onLoadComplete: () => {
 				// Fade out progress bar when done
 				if (progressContainer) progressContainer.classList.add('hidden');
+				markLoaded();
 				// Autoplay once everything is in memory (also after a dataset switch)
 				if (autoplay && view) {
 					view.play();
@@ -456,9 +530,10 @@ function setupPlaybackUi(wrapper, elem) {
 
 /**
  * Initialize mesh timeseries views
+ * @returns {Object[]} The views, not yet loading, for startViews
  */
 function initMeshViews() {
-	document.querySelectorAll('.mesh-view').forEach((elem) => {
+	return Array.from(document.querySelectorAll('.mesh-view'), (elem) => {
 		const wrapper = elem.closest('.mesh-view-wrapper');
 
 		// Defaults come from the view element; the wrapper's data-datasets list
@@ -507,6 +582,8 @@ function initMeshViews() {
 			showCoverslip: elem.dataset.coverslip !== 'false',
 			coverslipSize: numberAttr(elem, 'coverslipSize'),
 			coverslipOpacity: numberAttr(elem, 'coverslipOpacity'),
+			// How much decoded geometry to hold (see js/deviceProfile.js)
+			residentBytes: memoryPlan.meshResidentBytes,
 			// Timeline range and progress total follow the resolved count
 			onCountResolved: (count) => ui.setFrameCount(count),
 			...ui.callbacks
@@ -525,14 +602,16 @@ function initMeshViews() {
 		});
 
 		ui.wire(view);
+		return { elem, view, loaded: ui.loaded };
 	});
 }
 
 /**
  * Initialize volume timeseries views
+ * @returns {Object[]} The views, not yet loading, for startViews
  */
 function initVolumeViews() {
-	document.querySelectorAll('.volume-view').forEach((elem) => {
+	return Array.from(document.querySelectorAll('.volume-view'), (elem) => {
 		const wrapper = elem.closest('.volume-view-wrapper');
 
 		// Defaults come from the view element; the wrapper's data-datasets list
@@ -592,6 +671,8 @@ function initVolumeViews() {
 			coverslipSize: numberAttr(elem, 'coverslipSize'),
 			coverslipOpacity: numberAttr(elem, 'coverslipOpacity'),
 			axesSize: numberAttr(elem, 'axesSize'),
+			// How many decoded frames to hold (see js/deviceProfile.js)
+			maxDecodedFrames: memoryPlan.volumeDecodedFrames,
 			// Timeline range and progress total follow the metadata frame count
 			onMetadataLoaded: (metadata) => ui.setFrameCount(metadata.frameCount),
 			...ui.callbacks
@@ -666,6 +747,7 @@ function initVolumeViews() {
 		};
 
 		ui.wire(view, { onReset: resetDisplaySettings });
+		return { elem, view, loaded: ui.loaded };
 	});
 }
 
